@@ -1,7 +1,8 @@
 // pages/api/_jobs.js
 import crypto from "crypto";
+import { recordEncResultForRoundtrip } from "./_roundtrip";
 
-// currentJob: { id, keyHex, ptHex, token, status: 'pending'|'assigned'|'done' }
+// currentJob: { id, keyHex, ptHex, token, status, roundtrip?, groupId?, origPtHex? }
 // lastResult: { id, ctHex, valid, expectedCtHex }
 let currentJob = null;
 let lastResult = null;
@@ -10,9 +11,19 @@ function newJobId() {
   return Date.now().toString();
 }
 
-export function createJob(keyHex, ptHex, token = "0") {
+// opts: { roundtrip?: boolean, groupId?: string, origPtHex?: string }
+export function createJob(keyHex, ptHex, token = "0", opts = {}) {
   const id = newJobId();
-  currentJob = { id, keyHex, ptHex, token, status: "pending" };
+  currentJob = {
+    id,
+    keyHex,
+    ptHex,
+    token,
+    status: "pending",
+    roundtrip: !!opts.roundtrip,
+    groupId: opts.groupId || null,
+    origPtHex: (opts.origPtHex || ptHex),
+  };
   lastResult = null;
   return currentJob;
 }
@@ -25,9 +36,7 @@ export function getJobForEsp() {
 
 // ---- helpers ----
 
-// Normalize whatever the ESP/FPGA sends into pure HEX:
-// - if it's JSON like {"PT":"...."} or {"ct":"...."} → extract field
-// - strip non-hex chars
+// Normalize ciphertext to pure hex (strip JSON etc.)
 function normalizeCipher(raw) {
   if (!raw) return "";
   let s = String(raw).trim();
@@ -45,11 +54,10 @@ function normalizeCipher(raw) {
         obj.CTHex;
       if (cand) s = String(cand);
     } catch (e) {
-      // ignore parse error, fall back to raw string
+      // ignore parse error
     }
   }
 
-  // Keep only hex chars, uppercase
   s = s.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
   return s;
 }
@@ -72,7 +80,7 @@ function aesEcbEncryptHex(keyHex, ptHex) {
   return out.toString("hex").toUpperCase();
 }
 
-// Called when ESP/FPGA posts back the ciphertext
+// Called when ENC ESP/FPGA posts back the ciphertext
 export function completeJobWithValidation(id, ctHexRaw) {
   if (!currentJob || currentJob.id !== id) {
     return { ok: false, reason: "job-not-found" };
@@ -92,6 +100,18 @@ export function completeJobWithValidation(id, ctHexRaw) {
 
   currentJob.status = "done";
   lastResult = { id, ctHex: normCt, valid, expectedCtHex };
+
+  // If this encrypt job is part of a roundtrip, notify the roundtrip tracker
+  if (currentJob.roundtrip && currentJob.groupId) {
+    recordEncResultForRoundtrip(currentJob.groupId, {
+      token: currentJob.token,
+      keyHex: currentJob.keyHex,
+      ptHex: currentJob.origPtHex || currentJob.ptHex,
+      ctHex: normCt,
+      valid,
+      expectedCtHex,
+    });
+  }
 
   return { ok: true, valid, expectedCtHex };
 }

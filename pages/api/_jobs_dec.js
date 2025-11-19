@@ -1,8 +1,9 @@
 // pages/api/_jobs_dec.js
 import crypto from "crypto";
+import { recordDecResultForRoundtrip } from "./_roundtrip";
 
 // Decrypt jobs:
-// currentDecJob: { id, keyHex, ctHex, token, status: 'pending'|'assigned'|'done' }
+// currentDecJob: { id, keyHex, ctHex, token, status, roundtrip?, groupId?, origPtHex? }
 // lastDecResult: { id, ptHex, valid, expectedPtHex }
 
 let currentDecJob = null;
@@ -12,9 +13,19 @@ function newJobId() {
   return Date.now().toString();
 }
 
-export function createDecJob(keyHex, ctHex, token = "0") {
+// opts: { roundtrip?: boolean, groupId?: string, origPtHex?: string }
+export function createDecJob(keyHex, ctHex, token = "0", opts = {}) {
   const id = newJobId();
-  currentDecJob = { id, keyHex, ctHex, token, status: "pending" };
+  currentDecJob = {
+    id,
+    keyHex,
+    ctHex,
+    token,
+    status: "pending",
+    roundtrip: !!opts.roundtrip,
+    groupId: opts.groupId || null,
+    origPtHex: opts.origPtHex || null,
+  };
   lastDecResult = null;
   return currentDecJob;
 }
@@ -27,8 +38,7 @@ export function getDecJobForEsp() {
 
 // ---- helpers ----
 
-// Normalize whatever the ESP/FPGA sends into pure HEX:
-// If it's JSON like {"PT":"...."} or {"pt":"...."}, extract it; else strip non-hex
+// Normalize plaintext to pure hex (strip JSON etc.)
 function normalizePlain(raw) {
   if (!raw) return "";
   let s = String(raw).trim();
@@ -44,7 +54,7 @@ function normalizePlain(raw) {
         obj.PTHex;
       if (cand) s = String(cand);
     } catch (e) {
-      // ignore parse error, fall back to raw
+      // ignore parse error
     }
   }
 
@@ -70,7 +80,7 @@ function aesEcbDecryptHex(keyHex, ctHex) {
   return out.toString("hex").toUpperCase();
 }
 
-// Called when ESP/FPGA posts back the decrypted plaintext
+// Called when DEC ESP/FPGA posts back the decrypted plaintext
 export function completeDecJobWithValidation(id, ptHexRaw) {
   if (!currentDecJob || currentDecJob.id !== id) {
     return { ok: false, reason: "job-not-found" };
@@ -81,7 +91,10 @@ export function completeDecJobWithValidation(id, ptHexRaw) {
   let valid = false;
 
   try {
-    expectedPtHex = aesEcbDecryptHex(currentDecJob.keyHex, currentDecJob.ctHex);
+    expectedPtHex = aesEcbDecryptHex(
+      currentDecJob.keyHex,
+      currentDecJob.ctHex
+    );
     valid = normPt === expectedPtHex;
   } catch (e) {
     expectedPtHex = null;
@@ -90,6 +103,15 @@ export function completeDecJobWithValidation(id, ptHexRaw) {
 
   currentDecJob.status = "done";
   lastDecResult = { id, ptHex: normPt, valid, expectedPtHex };
+
+  // If this decrypt job is part of a roundtrip, notify the roundtrip tracker
+  if (currentDecJob.roundtrip && currentDecJob.groupId) {
+    recordDecResultForRoundtrip(currentDecJob.groupId, {
+      ptHex: normPt,
+      valid,
+      expectedPtHex,
+    });
+  }
 
   return { ok: true, valid, expectedPtHex };
 }
