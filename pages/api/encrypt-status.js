@@ -1,3 +1,4 @@
+// pages/api/encrypt-status.js
 import { getStatus } from "./_jobs";
 
 export default function handler(req, res) {
@@ -21,5 +22,7 @@ export default function handler(req, res) {
   res.status(200).json({
     status: st.status,
     ctHex: st.ctHex,
+    valid: st.valid,
+    expectedCtHex: st.expectedCtHex,
   });
 }

@@ -1,3 +1,4 @@
+// pages/api/encrypt-request.js
 import { createJob } from "./_jobs";
 
 export default function handler(req, res) {
@@ -6,16 +7,17 @@ export default function handler(req, res) {
     return;
   }
 
-  const { keyHex, ptHex } = req.body || {};
+  const { keyHex, ptHex, token } = req.body || {};
 
   if (!keyHex || !ptHex) {
     res.status(400).json({ error: "keyHex and ptHex required" });
     return;
   }
 
-  // Simple sanity check: 32, 48 or 64 hex chars for 128/192/256 bits
   if (![32, 48, 64].includes(keyHex.length)) {
-    res.status(400).json({ error: "keyHex must be 32/48/64 hex chars" });
+    res
+      .status(400)
+      .json({ error: "keyHex must be 32/48/64 hex chars (128/192/256 bits)" });
     return;
   }
   if (ptHex.length !== 32) {
@@ -23,6 +25,6 @@ export default function handler(req, res) {
     return;
   }
 
-  const job = createJob(keyHex.toUpperCase(), ptHex.toUpperCase());
+  const job = createJob(keyHex.toUpperCase(), ptHex.toUpperCase(), token || "0");
   res.status(200).json({ jobId: job.id, status: job.status });
 }

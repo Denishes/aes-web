@@ -1,4 +1,5 @@
-import { completeJob } from "./_jobs";
+// pages/api/encrypt-result.js
+import { completeJobWithValidation } from "./_jobs";
 
 export default function handler(req, res) {
   if (req.method !== "POST") {
@@ -12,11 +13,17 @@ export default function handler(req, res) {
     return;
   }
 
-  const ok = completeJob(jobId, ctHex.toUpperCase());
-  if (!ok) {
-    res.status(400).json({ error: "Unknown or mismatched jobId" });
+  const result = completeJobWithValidation(jobId, ctHex);
+  if (!result.ok) {
+    res
+      .status(400)
+      .json({ error: "Unknown or mismatched jobId", reason: result.reason });
     return;
   }
 
-  res.status(200).json({ ok: true });
+  res.status(200).json({
+    ok: true,
+    valid: result.valid,
+    expectedCtHex: result.expectedCtHex,
+  });
 }

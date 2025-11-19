@@ -1,3 +1,4 @@
+// pages/api/encrypt-job.js
 import { getJobForEsp } from "./_jobs";
 
 export default function handler(req, res) {
@@ -17,5 +18,6 @@ export default function handler(req, res) {
     jobId: job.id,
     keyHex: job.keyHex,
     ptHex: job.ptHex,
+    token: job.token,
   });
 }
