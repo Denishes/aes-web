@@ -1,10 +1,8 @@
 // pages/api/_jobs.js
 import crypto from "crypto";
 
-// Simple in-memory single-job store (OK for prototype)
 // currentJob: { id, keyHex, ptHex, token, status: 'pending'|'assigned'|'done' }
 // lastResult: { id, ctHex, valid, expectedCtHex }
-
 let currentJob = null;
 let lastResult = null;
 
@@ -23,6 +21,37 @@ export function getJobForEsp() {
   if (!currentJob || currentJob.status !== "pending") return null;
   currentJob.status = "assigned";
   return currentJob;
+}
+
+// ---- helpers ----
+
+// Normalize whatever the ESP/FPGA sends into pure HEX:
+// - if it's JSON like {"PT":"...."} or {"ct":"...."} → extract field
+// - strip non-hex chars
+function normalizeCipher(raw) {
+  if (!raw) return "";
+  let s = String(raw).trim();
+
+  // Try JSON first
+  if (s.startsWith("{")) {
+    try {
+      const obj = JSON.parse(s);
+      const cand =
+        obj.PT ||
+        obj.pt ||
+        obj.CT ||
+        obj.ct ||
+        obj.ctHex ||
+        obj.CTHex;
+      if (cand) s = String(cand);
+    } catch (e) {
+      // ignore parse error, fall back to raw string
+    }
+  }
+
+  // Keep only hex chars, uppercase
+  s = s.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+  return s;
 }
 
 // AES-ECB (no padding), 128/192/256 depending on key length
@@ -49,7 +78,7 @@ export function completeJobWithValidation(id, ctHexRaw) {
     return { ok: false, reason: "job-not-found" };
   }
 
-  const normCt = (ctHexRaw || "").toString().trim().toUpperCase();
+  const normCt = normalizeCipher(ctHexRaw);
   let expectedCtHex = null;
   let valid = false;
 
@@ -57,7 +86,6 @@ export function completeJobWithValidation(id, ctHexRaw) {
     expectedCtHex = aesEcbEncryptHex(currentJob.keyHex, currentJob.ptHex);
     valid = normCt === expectedCtHex;
   } catch (e) {
-    // If software AES fails, still store what we got
     expectedCtHex = null;
     valid = false;
   }
