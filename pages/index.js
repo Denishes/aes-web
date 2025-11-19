@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 
-// Map from token -> key (REPLACE keyHex for 1..F with your real keys)
+// EXACT match to your FPGA key_lookup in top.v
 const TOKEN_KEYS = {
   "0": {
     label: "Token 0",
@@ -69,35 +69,48 @@ const TOKEN_KEYS = {
 };
 
 export default function Home() {
+  // Shared: token + key
   const [token, setToken] = useState("0");
   const [keyHex, setKeyHex] = useState(TOKEN_KEYS["0"].keyHex);
-  const [ptHex, setPtHex] = useState("00112233445566778899AABBCCDDEEFF");
 
-  const [jobId, setJobId] = useState(null);
-  const [status, setStatus] = useState("");
-  const [ctHex, setCtHex] = useState("");
-  const [expectedHex, setExpectedHex] = useState("");
-  const [valid, setValid] = useState(null);
+  // Encrypt panel state
+  const [ptHex, setPtHex] = useState(
+    "00112233445566778899AABBCCDDEEFF"
+  );
+  const [encJobId, setEncJobId] = useState(null);
+  const [encStatus, setEncStatus] = useState("");
+  const [encCtHex, setEncCtHex] = useState("");
+  const [encExpectedHex, setEncExpectedHex] = useState("");
+  const [encValid, setEncValid] = useState(null);
+  const encPollTimer = useRef(null);
 
-  const pollTimer = useRef(null);
+  // Decrypt panel state
+  const [decCtHex, setDecCtHex] = useState(
+    "69C4E0D86A7B0430D8CDB78070B4C55A"
+  );
+  const [decJobId, setDecJobId] = useState(null);
+  const [decStatus, setDecStatus] = useState("");
+  const [decPtHex, setDecPtHex] = useState("");
+  const [decExpectedHex, setDecExpectedHex] = useState("");
+  const [decValid, setDecValid] = useState(null);
+  const decPollTimer = useRef(null);
 
+  // ========== Shared token handler ==========
   function onTokenChange(e) {
     const t = e.target.value;
     setToken(t);
     const entry = TOKEN_KEYS[t];
-    if (entry) {
-      setKeyHex(entry.keyHex);
-    } else {
-      setKeyHex("");
-    }
+    if (entry) setKeyHex(entry.keyHex);
+    else setKeyHex("");
   }
 
-  async function submitJob(e) {
+  // ========== Encrypt API logic ==========
+  async function submitEncrypt(e) {
     e.preventDefault();
-    setCtHex("");
-    setExpectedHex("");
-    setValid(null);
-    setStatus("Submitting job...");
+    setEncCtHex("");
+    setEncExpectedHex("");
+    setEncValid(null);
+    setEncStatus("Submitting encrypt job...");
 
     const trimmedKey = keyHex.trim();
     const trimmedPt = ptHex.trim();
@@ -114,83 +127,195 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setStatus("Error: " + (data.error || res.statusText));
+        setEncStatus("Error: " + (data.error || res.statusText));
         return;
       }
-      setJobId(data.jobId);
-      setStatus("Job created, waiting for FPGA...");
-      startPolling(data.jobId);
+      setEncJobId(data.jobId);
+      setEncStatus("Encrypt job created, waiting for ENC FPGA...");
+      startEncPolling(data.jobId);
     } catch (err) {
-      setStatus("Request error: " + err.message);
+      setEncStatus("Request error: " + err.message);
     }
   }
 
-  async function pollOnce(id) {
+  async function pollEncryptOnce(id) {
     try {
       const res = await fetch(
         `/api/encrypt-status?jobId=${encodeURIComponent(id)}`
       );
       const data = await res.json();
       if (!res.ok) {
-        setStatus("Status error: " + (data.error || res.statusText));
-        stopPolling();
+        setEncStatus("Status error: " + (data.error || res.statusText));
+        stopEncPolling();
         return;
       }
       if (data.status === "done") {
-        setStatus("Done");
-        setCtHex(data.ctHex || "");
-        setExpectedHex(data.expectedCtHex || "");
-        setValid(data.valid);
-        stopPolling();
+        setEncStatus("Encryption done");
+        setEncCtHex(data.ctHex || "");
+        setEncExpectedHex(data.expectedCtHex || "");
+        setEncValid(data.valid);
+        stopEncPolling();
       } else {
-        setStatus(`Status: ${data.status} (waiting for FPGA...)`);
+        setEncStatus(
+          `Status: ${data.status} (waiting for ENC FPGA...)`
+        );
       }
     } catch (err) {
-      setStatus("Poll error: " + err.message);
-      stopPolling();
+      setEncStatus("Poll error: " + err.message);
+      stopEncPolling();
     }
   }
 
-  function startPolling(id) {
-    stopPolling();
-    pollTimer.current = setInterval(() => pollOnce(id), 1000);
+  function startEncPolling(id) {
+    stopEncPolling();
+    encPollTimer.current = setInterval(() => pollEncryptOnce(id), 1000);
   }
 
-  function stopPolling() {
-    if (pollTimer.current) {
-      clearInterval(pollTimer.current);
-      pollTimer.current = null;
+  function stopEncPolling() {
+    if (encPollTimer.current) {
+      clearInterval(encPollTimer.current);
+      encPollTimer.current = null;
     }
   }
 
-  const validBox =
-    valid === true ? (
+  // ========== Decrypt API logic ==========
+  async function submitDecrypt(e) {
+    e.preventDefault();
+    setDecPtHex("");
+    setDecExpectedHex("");
+    setDecValid(null);
+    setDecStatus("Submitting decrypt job...");
+
+    const trimmedKey = keyHex.trim();
+    const trimmedCt = decCtHex.trim();
+
+    try {
+      const res = await fetch("/api/decrypt-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token,
+          keyHex: trimmedKey,
+          ctHex: trimmedCt,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDecStatus("Error: " + (data.error || res.statusText));
+        return;
+      }
+      setDecJobId(data.jobId);
+      setDecStatus("Decrypt job created, waiting for DEC FPGA...");
+      startDecPolling(data.jobId);
+    } catch (err) {
+      setDecStatus("Request error: " + err.message);
+    }
+  }
+
+  async function pollDecryptOnce(id) {
+    try {
+      const res = await fetch(
+        `/api/decrypt-status?jobId=${encodeURIComponent(id)}`
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setDecStatus("Status error: " + (data.error || res.statusText));
+        stopDecPolling();
+        return;
+      }
+      if (data.status === "done") {
+        setDecStatus("Decryption done");
+        setDecPtHex(data.ptHex || "");
+        setDecExpectedHex(data.expectedPtHex || "");
+        setDecValid(data.valid);
+        stopDecPolling();
+      } else {
+        setDecStatus(
+          `Status: ${data.status} (waiting for DEC FPGA...)`
+        );
+      }
+    } catch (err) {
+      setDecStatus("Poll error: " + err.message);
+      stopDecPolling();
+    }
+  }
+
+  function startDecPolling(id) {
+    stopDecPolling();
+    decPollTimer.current = setInterval(() => pollDecryptOnce(id), 1000);
+  }
+
+  function stopDecPolling() {
+    if (decPollTimer.current) {
+      clearInterval(decPollTimer.current);
+      decPollTimer.current = null;
+    }
+  }
+
+  // ========== UI helpers ==========
+  const encValidBox =
+    encValid === true ? (
       <div
         style={{
-          marginTop: "1rem",
-          padding: "0.75rem 1rem",
+          marginTop: "0.7rem",
+          padding: "0.6rem 0.9rem",
           borderRadius: "8px",
           backgroundColor: "#e6ffed",
           border: "1px solid #2ecc71",
           color: "#1e8449",
           fontWeight: 500,
+          fontSize: "0.85rem",
         }}
       >
-        ✅ FPGA output matches software AES.
+        ✅ ENC FPGA output matches software AES encryption.
       </div>
-    ) : valid === false ? (
+    ) : encValid === false ? (
       <div
         style={{
-          marginTop: "1rem",
-          padding: "0.75rem 1rem",
+          marginTop: "0.7rem",
+          padding: "0.6rem 0.9rem",
           borderRadius: "8px",
           backgroundColor: "#ffecec",
           border: "1px solid #e74c3c",
           color: "#c0392b",
           fontWeight: 500,
+          fontSize: "0.85rem",
         }}
       >
-        ❌ Mismatch between FPGA and software AES.
+        ❌ ENC FPGA ciphertext does not match software AES.
+      </div>
+    ) : null;
+
+  const decValidBox =
+    decValid === true ? (
+      <div
+        style={{
+          marginTop: "0.7rem",
+          padding: "0.6rem 0.9rem",
+          borderRadius: "8px",
+          backgroundColor: "#e6ffed",
+          border: "1px solid #2ecc71",
+          color: "#1e8449",
+          fontWeight: 500,
+          fontSize: "0.85rem",
+        }}
+      >
+        ✅ DEC FPGA output matches software AES decryption.
+      </div>
+    ) : decValid === false ? (
+      <div
+        style={{
+          marginTop: "0.7rem",
+          padding: "0.6rem 0.9rem",
+          borderRadius: "8px",
+          backgroundColor: "#ffecec",
+          border: "1px solid #e74c3c",
+          color: "#c0392b",
+          fontWeight: 500,
+          fontSize: "0.85rem",
+        }}
+      >
+        ❌ DEC FPGA plaintext does not match software AES.
       </div>
     ) : null;
 
@@ -214,7 +339,7 @@ export default function Home() {
         <div
           style={{
             width: "100%",
-            maxWidth: "720px",
+            maxWidth: "900px",
             background: "rgba(15, 23, 42, 0.92)",
             borderRadius: "16px",
             padding: "1.75rem",
@@ -223,6 +348,7 @@ export default function Home() {
             backdropFilter: "blur(16px)",
           }}
         >
+          {/* Header */}
           <header style={{ marginBottom: "1.5rem" }}>
             <h1
               style={{
@@ -245,7 +371,7 @@ export default function Home() {
                   background: "rgba(8, 47, 73, 0.6)",
                 }}
               >
-                via ESP32 + Vercel
+                ENC + DEC via ESP32 + Vercel
               </span>
             </h1>
             <p
@@ -255,178 +381,217 @@ export default function Home() {
                 color: "#cbd5f5",
               }}
             >
-              Select a key token, review the corresponding AES key and send a
-              128-bit block to be processed by the FPGA. The result is checked
-              against a software AES implementation.
+              Choose a key token, then use the top panel to encrypt and the
+              bottom panel to decrypt using separate FPGA cores. The server
+              validates each result against software AES.
             </p>
           </header>
 
-          <form
-            onSubmit={submitJob}
+          {/* Shared token + key */}
+          <section
             style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 2fr",
-              gap: "1rem 1.5rem",
-              alignItems: "flex-start",
+              marginBottom: "1.5rem",
+              paddingBottom: "1.2rem",
+              borderBottom: "1px solid rgba(148, 163, 184, 0.3)",
             }}
           >
-            {/* Token selector */}
-            <div style={{ gridColumn: "1 / 2" }}>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "0.85rem",
-                  fontWeight: 500,
-                  marginBottom: "0.35rem",
-                  color: "#e5e7eb",
-                }}
-              >
-                Key token
-              </label>
-              <select
-                value={token}
-                onChange={onTokenChange}
-                style={{
-                  width: "100%",
-                  padding: "0.5rem 0.6rem",
-                  borderRadius: "8px",
-                  border: "1px solid rgba(148, 163, 184, 0.7)",
-                  background: "rgba(15, 23, 42, 0.9)",
-                  color: "#f9fafb",
-                  fontSize: "0.9rem",
-                }}
-              >
-                {Object.entries(TOKEN_KEYS).map(([t, info]) => (
-                  <option key={t} value={t}>
-                    {t} — {info.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Key display */}
-            <div style={{ gridColumn: "1 / 3" }}>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "0.85rem",
-                  fontWeight: 500,
-                  marginBottom: "0.35rem",
-                  color: "#e5e7eb",
-                }}
-              >
-                Key (hex, derived from token)
-              </label>
-              <div
-                style={{
-                  width: "100%",
-                  padding: "0.45rem 0.6rem",
-                  borderRadius: "8px",
-                  border: "1px solid rgba(148, 163, 184, 0.7)",
-                  background: "rgba(15, 23, 42, 0.9)",
-                  fontFamily: "monospace",
-                  fontSize: "0.9rem",
-                  wordBreak: "break-all",
-                }}
-              >
-                {keyHex}
-              </div>
-            </div>
-
-            {/* Plaintext input */}
-            <div style={{ gridColumn: "1 / 3" }}>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "0.85rem",
-                  fontWeight: 500,
-                  marginBottom: "0.35rem",
-                  color: "#e5e7eb",
-                }}
-              >
-                Plaintext (128-bit, hex)
-              </label>
-              <input
-                value={ptHex}
-                onChange={(e) => setPtHex(e.target.value.trim())}
-                style={{
-                  width: "100%",
-                  padding: "0.5rem 0.6rem",
-                  borderRadius: "8px",
-                  border: "1px solid rgba(148, 163, 184, 0.7)",
-                  background: "rgba(15, 23, 42, 0.9)",
-                  color: "#f9fafb",
-                  fontFamily: "monospace",
-                  fontSize: "0.9rem",
-                }}
-              />
-            </div>
-
-            {/* Submit button */}
-            <div style={{ gridColumn: "1 / 3", textAlign: "right" }}>
-              <button
-                type="submit"
-                style={{
-                  padding: "0.55rem 1.4rem",
-                  borderRadius: "999px",
-                  border: "none",
-                  fontSize: "0.9rem",
-                  fontWeight: 500,
-                  cursor: "pointer",
-                  background:
-                    "linear-gradient(135deg, #0ea5e9 0%, #22c55e 50%, #a855f7 100%)",
-                  color: "#0f172a",
-                  boxShadow: "0 8px 20px rgba(56, 189, 248, 0.5)",
-                  transition:
-                    "transform 0.08s ease, box-shadow 0.08s ease",
-                }}
-                onMouseDown={(e) => {
-                  e.currentTarget.style.transform = "scale(0.97)";
-                  e.currentTarget.style.boxShadow =
-                    "0 3px 10px rgba(56, 189, 248, 0.4)";
-                }}
-                onMouseUp={(e) => {
-                  e.currentTarget.style.transform = "scale(1)";
-                  e.currentTarget.style.boxShadow =
-                    "0 8px 20px rgba(56, 189, 248, 0.5)";
-                }}
-              >
-                Send block to FPGA
-              </button>
-            </div>
-          </form>
-
-          {/* Status + results */}
-          <section style={{ marginTop: "1.5rem" }}>
             <div
               style={{
-                fontSize: "0.9rem",
-                color: "#e5e7eb",
-                marginBottom: "0.4rem",
+                display: "grid",
+                gridTemplateColumns: "1fr 3fr",
+                gap: "1rem 1.5rem",
+                alignItems: "flex-start",
               }}
             >
-              <strong>Status:</strong> {status || "Idle"}
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "0.85rem",
+                    fontWeight: 500,
+                    marginBottom: "0.35rem",
+                    color: "#e5e7eb",
+                  }}
+                >
+                  Key token
+                </label>
+                <select
+                  value={token}
+                  onChange={onTokenChange}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem 0.6rem",
+                    borderRadius: "8px",
+                    border: "1px solid rgba(148, 163, 184, 0.7)",
+                    background: "rgba(15, 23, 42, 0.9)",
+                    color: "#f9fafb",
+                    fontSize: "0.9rem",
+                  }}
+                >
+                  {Object.entries(TOKEN_KEYS).map(([t, info]) => (
+                    <option key={t} value={t}>
+                      {t} — {info.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "0.85rem",
+                    fontWeight: 500,
+                    marginBottom: "0.35rem",
+                    color: "#e5e7eb",
+                  }}
+                >
+                  Key (hex, derived from token)
+                </label>
+                <div
+                  style={{
+                    width: "100%",
+                    padding: "0.45rem 0.6rem",
+                    borderRadius: "8px",
+                    border: "1px solid rgba(148, 163, 184, 0.7)",
+                    background: "rgba(15, 23, 42, 0.9)",
+                    fontFamily: "monospace",
+                    fontSize: "0.9rem",
+                    wordBreak: "break-all",
+                    color: "#e5e7eb",
+                  }}
+                >
+                  {keyHex}
+                </div>
+              </div>
             </div>
-            {jobId && (
+          </section>
+
+          {/* Encrypt panel */}
+          <section
+            style={{
+              marginBottom: "1.8rem",
+              paddingBottom: "1.4rem",
+              borderBottom: "1px solid rgba(148, 163, 184, 0.3)",
+            }}
+          >
+            <h2
+              style={{
+                fontSize: "1.1rem",
+                fontWeight: 600,
+                margin: "0 0 0.7rem",
+                color: "#e5e7eb",
+              }}
+            >
+              Encryption (FPGA ENC node)
+            </h2>
+
+            <form
+              onSubmit={submitEncrypt}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr",
+                gap: "0.9rem",
+              }}
+            >
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "0.85rem",
+                    fontWeight: 500,
+                    marginBottom: "0.35rem",
+                    color: "#e5e7eb",
+                  }}
+                >
+                  Plaintext (128-bit, hex)
+                </label>
+                <input
+                  value={ptHex}
+                  onChange={(e) =>
+                    setPtHex(e.target.value.trim())
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem 0.6rem",
+                    borderRadius: "8px",
+                    border:
+                      "1px solid rgba(148, 163, 184, 0.7)",
+                    background: "rgba(15, 23, 42, 0.9)",
+                    color: "#f9fafb",
+                    fontFamily: "monospace",
+                    fontSize: "0.9rem",
+                  }}
+                />
+              </div>
+
+              <div style={{ textAlign: "right" }}>
+                <button
+                  type="submit"
+                  style={{
+                    padding: "0.5rem 1.4rem",
+                    borderRadius: "999px",
+                    border: "none",
+                    fontSize: "0.9rem",
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    background:
+                      "linear-gradient(135deg, #0ea5e9 0%, #22c55e 50%, #a855f7 100%)",
+                    color: "#0f172a",
+                    boxShadow:
+                      "0 8px 20px rgba(56, 189, 248, 0.5)",
+                    transition:
+                      "transform 0.08s ease, box-shadow 0.08s ease",
+                  }}
+                  onMouseDown={(e) => {
+                    e.currentTarget.style.transform =
+                      "scale(0.97)";
+                    e.currentTarget.style.boxShadow =
+                      "0 3px 10px rgba(56, 189, 248, 0.4)";
+                  }}
+                  onMouseUp={(e) => {
+                    e.currentTarget.style.transform =
+                      "scale(1)";
+                    e.currentTarget.style.boxShadow =
+                      "0 8px 20px rgba(56, 189, 248, 0.5)";
+                  }}
+                >
+                  Send to ENC FPGA
+                </button>
+              </div>
+            </form>
+
+            <div
+              style={{
+                marginTop: "0.8rem",
+                fontSize: "0.9rem",
+                color: "#e5e7eb",
+              }}
+            >
+              <strong>Status:</strong>{" "}
+              {encStatus || "Idle"}
+            </div>
+            {encJobId && (
               <div
                 style={{
+                  marginTop: "0.2rem",
                   fontSize: "0.8rem",
                   color: "#9ca3af",
-                  marginBottom: "0.6rem",
                 }}
               >
-                <strong>Job ID:</strong> {jobId}
+                <strong>Job ID:</strong> {encJobId}
               </div>
             )}
 
-            {ctHex && (
+            {encCtHex && (
               <div
                 style={{
                   marginTop: "0.75rem",
                   padding: "0.6rem 0.7rem",
                   borderRadius: "8px",
                   background: "rgba(15, 23, 42, 0.9)",
-                  border: "1px solid rgba(148, 163, 184, 0.5)",
+                  border:
+                    "1px solid rgba(148, 163, 184, 0.5)",
                 }}
               >
                 <div
@@ -437,7 +602,7 @@ export default function Home() {
                     color: "#e5e7eb",
                   }}
                 >
-                  Ciphertext from FPGA
+                  Ciphertext from ENC FPGA
                 </div>
                 <div
                   style={{
@@ -447,10 +612,10 @@ export default function Home() {
                     color: "#e5e7eb",
                   }}
                 >
-                  {ctHex}
+                  {encCtHex}
                 </div>
 
-                {expectedHex && (
+                {encExpectedHex && (
                   <>
                     <div
                       style={{
@@ -461,7 +626,7 @@ export default function Home() {
                         color: "#a5b4fc",
                       }}
                     >
-                      Expected (software AES)
+                      Expected (software AES ENC)
                     </div>
                     <div
                       style={{
@@ -471,19 +636,192 @@ export default function Home() {
                         color: "#e5e7eb",
                       }}
                     >
-                      {expectedHex}
+                      {encExpectedHex}
                     </div>
                   </>
                 )}
               </div>
             )}
 
-            {validBox}
+            {encValidBox}
+          </section>
+
+          {/* Decrypt panel */}
+          <section>
+            <h2
+              style={{
+                fontSize: "1.1rem",
+                fontWeight: 600,
+                margin: "0 0 0.7rem",
+                color: "#e5e7eb",
+              }}
+            >
+              Decryption (FPGA DEC node)
+            </h2>
+
+            <form
+              onSubmit={submitDecrypt}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr",
+                gap: "0.9rem",
+              }}
+            >
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "0.85rem",
+                    fontWeight: 500,
+                    marginBottom: "0.35rem",
+                    color: "#e5e7eb",
+                  }}
+                >
+                  Ciphertext (128-bit, hex)
+                </label>
+                <input
+                  value={decCtHex}
+                  onChange={(e) =>
+                    setDecCtHex(e.target.value.trim())
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem 0.6rem",
+                    borderRadius: "8px",
+                    border:
+                      "1px solid rgba(148, 163, 184, 0.7)",
+                    background: "rgba(15, 23, 42, 0.9)",
+                    color: "#f9fafb",
+                    fontFamily: "monospace",
+                    fontSize: "0.9rem",
+                  }}
+                />
+              </div>
+
+              <div style={{ textAlign: "right" }}>
+                <button
+                  type="submit"
+                  style={{
+                    padding: "0.5rem 1.4rem",
+                    borderRadius: "999px",
+                    border: "none",
+                    fontSize: "0.9rem",
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    background:
+                      "linear-gradient(135deg, #f97316 0%, #facc15 40%, #ec4899 100%)",
+                    color: "#0f172a",
+                    boxShadow:
+                      "0 8px 20px rgba(248, 181, 0, 0.45)",
+                    transition:
+                      "transform 0.08s ease, box-shadow 0.08s ease",
+                  }}
+                  onMouseDown={(e) => {
+                    e.currentTarget.style.transform =
+                      "scale(0.97)";
+                    e.currentTarget.style.boxShadow =
+                      "0 3px 10px rgba(248, 181, 0, 0.35)";
+                  }}
+                  onMouseUp={(e) => {
+                    e.currentTarget.style.transform =
+                      "scale(1)";
+                    e.currentTarget.style.boxShadow =
+                      "0 8px 20px rgba(248, 181, 0, 0.45)";
+                  }}
+                >
+                  Send to DEC FPGA
+                </button>
+              </div>
+            </form>
+
+            <div
+              style={{
+                marginTop: "0.8rem",
+                fontSize: "0.9rem",
+                color: "#e5e7eb",
+              }}
+            >
+              <strong>Status:</strong>{" "}
+              {decStatus || "Idle"}
+            </div>
+            {decJobId && (
+              <div
+                style={{
+                  marginTop: "0.2rem",
+                  fontSize: "0.8rem",
+                  color: "#9ca3af",
+                }}
+              >
+                <strong>Job ID:</strong> {decJobId}
+              </div>
+            )}
+
+            {decPtHex && (
+              <div
+                style={{
+                  marginTop: "0.75rem",
+                  padding: "0.6rem 0.7rem",
+                  borderRadius: "8px",
+                  background: "rgba(15, 23, 42, 0.9)",
+                  border:
+                    "1px solid rgba(148, 163, 184, 0.5)",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: "0.85rem",
+                    fontWeight: 500,
+                    marginBottom: "0.25rem",
+                    color: "#e5e7eb",
+                  }}
+                >
+                  Plaintext from DEC FPGA
+                </div>
+                <div
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: "0.9rem",
+                    wordBreak: "break-all",
+                    color: "#e5e7eb",
+                  }}
+                >
+                  {decPtHex}
+                </div>
+
+                {decExpectedHex && (
+                  <>
+                    <div
+                      style={{
+                        fontSize: "0.8rem",
+                        fontWeight: 500,
+                        marginTop: "0.6rem",
+                        marginBottom: "0.15rem",
+                        color: "#a5b4fc",
+                      }}
+                    >
+                      Expected (software AES DEC)
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: "monospace",
+                        fontSize: "0.85rem",
+                        wordBreak: "break-all",
+                        color: "#e5e7eb",
+                      }}
+                    >
+                      {decExpectedHex}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {decValidBox}
           </section>
         </div>
       </main>
 
-      {/* Remove white border: reset body/html margins + background */}
+      {/* Full black background, no white border */}
       <style jsx global>{`
         html,
         body,
