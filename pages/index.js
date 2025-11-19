@@ -3,68 +3,68 @@ import { useState, useRef } from "react";
 // Map from token -> key (REPLACE keyHex for 1..F with your real keys)
 const TOKEN_KEYS = {
   "0": {
-    label: "Token 0 – NIST AES-128 key",
+    label: "Token 0",
     keyHex: "000102030405060708090A0B0C0D0E0F",
   },
   "1": {
     label: "Token 1",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "101112131415161718191A1B1C1D1E1F",
   },
   "2": {
     label: "Token 2",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "202122232425262728292A2B2C2D2E2F",
   },
   "3": {
     label: "Token 3",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "303132333435363738393A3B3C3D3E3F",
   },
   "4": {
     label: "Token 4",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "404142434445464748494A4B4C4D4E4F",
   },
   "5": {
     label: "Token 5",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "505152535455565758595A5B5C5D5E5F",
   },
   "6": {
     label: "Token 6",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "606162636465666768696A6B6C6D6E6F",
   },
   "7": {
     label: "Token 7",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "707172737475767778797A7B7C7D7E7F",
   },
   "8": {
     label: "Token 8",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "808182838485868788898A8B8C8D8E8F",
   },
   "9": {
     label: "Token 9",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "909192939495969798999A9B9C9D9E9F",
   },
   A: {
     label: "Token A",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "A0A1A2A3A4A5A6A7A8A9AAABACADAEAF",
   },
   B: {
     label: "Token B",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "B0B1B2B3B4B5B6B7B8B9BABBBCBDBEBF",
   },
   C: {
     label: "Token C",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "C0C1C2C3C4C5C6C7C8C9CACBCCCDCECF",
   },
   D: {
     label: "Token D",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "D0D1D2D3D4D5D6D7D8D9DADBDCDDDEDF",
   },
   E: {
     label: "Token E",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "E0E1E2E3E4E5E6E7E8E9EAEBECEDEEEF",
   },
   F: {
     label: "Token F",
-    keyHex: "00112233445566778899AABBCCDDEEFF", // TODO: replace
+    keyHex: "F0F1F2F3F4F5F6F7F8F9FAFBFCFDFEFF",
   },
 };
 
