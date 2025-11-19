@@ -1,82 +1,121 @@
 // pages/api/_roundtrip.js
+import { createJob, getStatus as getEncStatus } from "./_jobs";
+import { createDecJob, getDecStatus } from "./_jobs_dec";
 
-// Single active roundtrip group (OK for your prototype)
+// Single roundtrip group (OK for prototype)
+// currentGroup:
 // {
-//   groupId, token, keyHex, ptHex,
-//   encCtHex, encValid, encExpectedCtHex,
-//   decPtHex, decValid, decExpectedPtHex
+//   groupId, keyHex, ptHex, token,
+//   encJobId, encDone, encCtHex, encValid, encExpectedCtHex,
+//   decJobId, decDone, decPtHex, decValid, decExpectedPtHex
 // }
-let active = null;
+let currentGroup = null;
 
-export function startRoundtrip(groupId, token, keyHex, ptHex) {
-  active = {
+function newGroupId() {
+  return Date.now().toString();
+}
+
+// Called by /api/roundtrip-request
+export function startRoundtrip(keyHex, ptHex, token = "0") {
+  const groupId = newGroupId();
+
+  const encJob = createJob(keyHex, ptHex, token);
+
+  currentGroup = {
     groupId,
-    token: token || "0",
-    keyHex: (keyHex || "").toUpperCase(),
-    ptHex: (ptHex || "").toUpperCase(),
+    keyHex,
+    ptHex,
+    token,
+    encJobId: encJob.id,
+    encDone: false,
     encCtHex: null,
     encValid: null,
     encExpectedCtHex: null,
+    decJobId: null,
+    decDone: false,
     decPtHex: null,
     decValid: null,
     decExpectedPtHex: null,
   };
+
+  return { groupId, encJobId: encJob.id };
 }
 
-// Called from encrypt side when ENC FPGA result is known
-export function recordEncResultForRoundtrip(
-  groupId,
-  { token, keyHex, ptHex, ctHex, valid, expectedCtHex }
-) {
-  if (!active || active.groupId !== groupId) return;
+// Called by /api/encrypt-result after validation
+export function noteEncryptResult(jobId, valid, expectedCtHex) {
+  if (!currentGroup || currentGroup.encJobId !== jobId) return;
 
-  active.token = token || active.token;
-  active.keyHex = (keyHex || active.keyHex || "").toUpperCase();
-  active.ptHex = (ptHex || active.ptHex || "").toUpperCase();
-  active.encCtHex = (ctHex || "").toUpperCase();
-  active.encValid = !!valid;
-  active.encExpectedCtHex = expectedCtHex || null;
+  // Get normalized ctHex from encrypt job status
+  const st = getEncStatus(jobId);
+  const normCt = st && st.ctHex ? st.ctHex : null;
+
+  currentGroup.encDone = true;
+  currentGroup.encCtHex = normCt;
+  currentGroup.encValid = valid;
+  currentGroup.encExpectedCtHex = expectedCtHex;
+
+  // If we have a ciphertext, create a decrypt job using that ct
+  if (normCt) {
+    const decJob = createDecJob(
+      currentGroup.keyHex,
+      normCt,
+      currentGroup.token
+    );
+    currentGroup.decJobId = decJob.id;
+  }
 }
 
-// Called from decrypt side when DEC FPGA result is known
-export function recordDecResultForRoundtrip(
-  groupId,
-  { ptHex, valid, expectedPtHex }
-) {
-  if (!active || active.groupId !== groupId) return;
+// Called by /api/decrypt-result after validation
+export function noteDecryptResult(jobId, valid, expectedPtHex) {
+  if (!currentGroup || currentGroup.decJobId !== jobId) return;
 
-  active.decPtHex = (ptHex || "").toUpperCase();
-  active.decValid = !!valid;
-  active.decExpectedPtHex = expectedPtHex || null;
+  const st = getDecStatus(jobId);
+  const normPt = st && st.ptHex ? st.ptHex : null;
+
+  currentGroup.decDone = true;
+  currentGroup.decPtHex = normPt;
+  currentGroup.decValid = valid;
+  currentGroup.decExpectedPtHex = expectedPtHex;
 }
 
+// Called by /api/roundtrip-status
 export function getRoundtripStatus(groupId) {
-  if (!active || active.groupId !== groupId) {
+  if (!currentGroup || currentGroup.groupId !== groupId) {
     return { exists: false };
   }
 
-  const ptIn = active.ptHex || "";
-  const ptDec = active.decPtHex || "";
+  let status = "waiting-enc";
+  if (currentGroup.encDone && !currentGroup.decDone) status = "waiting-dec";
+  else if (currentGroup.encDone && currentGroup.decDone) status = "done";
+
+  // Roundtrip OK if DEC plaintext == original PT (ignoring non-hex, case)
+  const normOrig =
+    (currentGroup.ptHex || "").toUpperCase().replace(/[^0-9A-F]/g, "");
+  const normDec =
+    (currentGroup.decPtHex || "").toUpperCase().replace(/[^0-9A-F]/g, "");
   const roundtripOk =
-    ptIn.length === 32 &&
-    ptDec.length === 32 &&
-    ptIn.toUpperCase() === ptDec.toUpperCase();
+    status === "done" && normOrig.length && normOrig === normDec;
 
   return {
     exists: true,
-    groupId: active.groupId,
-    token: active.token,
-    keyHex: active.keyHex,
-    ptHexIn: active.ptHex,
-
-    encCtHex: active.encCtHex,
-    encValid: active.encValid,
-    encExpectedCtHex: active.encExpectedCtHex,
-
-    decPtHex: active.decPtHex,
-    decValid: active.decValid,
-    decExpectedPtHex: active.decExpectedPtHex,
-
+    status,
+    keyHex: currentGroup.keyHex,
+    ptHexOriginal: currentGroup.ptHex,
+    token: currentGroup.token,
+    enc: {
+      jobId: currentGroup.encJobId,
+      done: currentGroup.encDone,
+      ctHex: currentGroup.encCtHex,
+      valid: currentGroup.encValid,
+      expectedCtHex: currentGroup.encExpectedCtHex,
+    },
+    dec: {
+      jobId: currentGroup.decJobId,
+      done: currentGroup.decDone,
+      ptHex: currentGroup.decPtHex,
+      valid: currentGroup.decValid,
+      expectedPtHex: currentGroup.decExpectedPtHex,
+    },
     roundtripOk,
   };
 }

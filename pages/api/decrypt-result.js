@@ -1,5 +1,6 @@
 // pages/api/decrypt-result.js
 import { completeDecJobWithValidation } from "./_jobs_dec";
+import { noteDecryptResult } from "./_roundtrip";
 
 export default function handler(req, res) {
   if (req.method !== "POST") {
@@ -20,6 +21,9 @@ export default function handler(req, res) {
       .json({ error: "Unknown or mismatched jobId", reason: result.reason });
     return;
   }
+
+  // Update roundtrip group (if this decrypt job belongs to one)
+  noteDecryptResult(jobId, result.valid, result.expectedPtHex);
 
   res.status(200).json({
     ok: true,

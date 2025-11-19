@@ -36,12 +36,11 @@ export function getJobForEsp() {
 
 // ---- helpers ----
 
-// Normalize ciphertext to pure hex (strip JSON etc.)
+// Normalizar ciphertext para HEX puro (strip JSON, etc.)
 function normalizeCipher(raw) {
   if (!raw) return "";
   let s = String(raw).trim();
 
-  // Try JSON first
   if (s.startsWith("{")) {
     try {
       const obj = JSON.parse(s);
@@ -54,7 +53,7 @@ function normalizeCipher(raw) {
         obj.CTHex;
       if (cand) s = String(cand);
     } catch (e) {
-      // ignore parse error
+      // ignora erro de parse
     }
   }
 
@@ -62,7 +61,7 @@ function normalizeCipher(raw) {
   return s;
 }
 
-// AES-ECB (no padding), 128/192/256 depending on key length
+// AES-ECB (no padding), 128/192/256 conforme tamanho da chave
 function aesEcbEncryptHex(keyHex, ptHex) {
   const key = Buffer.from(keyHex, "hex");
   const pt = Buffer.from(ptHex, "hex");
@@ -80,7 +79,7 @@ function aesEcbEncryptHex(keyHex, ptHex) {
   return out.toString("hex").toUpperCase();
 }
 
-// Called when ENC ESP/FPGA posts back the ciphertext
+// Chamado quando o ENC ESP/FPGA faz POST /encrypt-result
 export function completeJobWithValidation(id, ctHexRaw) {
   if (!currentJob || currentJob.id !== id) {
     return { ok: false, reason: "job-not-found" };
@@ -101,7 +100,20 @@ export function completeJobWithValidation(id, ctHexRaw) {
   currentJob.status = "done";
   lastResult = { id, ctHex: normCt, valid, expectedCtHex };
 
-  // If this encrypt job is part of a roundtrip, notify the roundtrip tracker
+  const info = {
+    ok: true,
+    valid,
+    expectedCtHex,
+    // extra para roundtrip
+    roundtrip: !!currentJob.roundtrip,
+    groupId: currentJob.groupId,
+    token: currentJob.token,
+    keyHex: currentJob.keyHex,
+    ptHex: currentJob.origPtHex || currentJob.ptHex,
+    ctHex: normCt,
+  };
+
+  // Se fizer parte de roundtrip, atualiza o tracker
   if (currentJob.roundtrip && currentJob.groupId) {
     recordEncResultForRoundtrip(currentJob.groupId, {
       token: currentJob.token,
@@ -113,7 +125,7 @@ export function completeJobWithValidation(id, ctHexRaw) {
     });
   }
 
-  return { ok: true, valid, expectedCtHex };
+  return info;
 }
 
 export function getStatus(id) {

@@ -1,5 +1,5 @@
-// pages/api/decrypt-request.js
-import { createDecJob } from "./_jobs_dec";
+// pages/api/roundtrip-request.js
+import { startRoundtrip } from "./_roundtrip";
 
 export default function handler(req, res) {
   if (req.method !== "POST") {
@@ -7,10 +7,10 @@ export default function handler(req, res) {
     return;
   }
 
-  const { keyHex, ctHex, token } = req.body || {};
+  const { keyHex, ptHex, token } = req.body || {};
 
-  if (!keyHex || !ctHex) {
-    res.status(400).json({ error: "keyHex and ctHex required" });
+  if (!keyHex || !ptHex) {
+    res.status(400).json({ error: "keyHex and ptHex required" });
     return;
   }
 
@@ -20,16 +20,20 @@ export default function handler(req, res) {
       .json({ error: "keyHex must be 32/48/64 hex chars (128/192/256 bits)" });
     return;
   }
-  if (ctHex.length !== 32) {
-    res.status(400).json({ error: "ctHex must be 32 hex chars (128-bit block)" });
+  if (ptHex.length !== 32) {
+    res.status(400).json({ error: "ptHex must be 32 hex chars" });
     return;
   }
 
-  const job = createDecJob(
+  const { groupId, encJobId } = startRoundtrip(
     keyHex.toUpperCase(),
-    ctHex.toUpperCase(),
+    ptHex.toUpperCase(),
     token || "0"
   );
 
-  res.status(200).json({ jobId: job.id, status: job.status });
+  res.status(200).json({
+    groupId,
+    encJobId,
+    status: "waiting-enc",
+  });
 }

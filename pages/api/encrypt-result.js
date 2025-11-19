@@ -1,5 +1,6 @@
 // pages/api/encrypt-result.js
 import { completeJobWithValidation } from "./_jobs";
+import { noteEncryptResult } from "./_roundtrip";
 
 export default function handler(req, res) {
   if (req.method !== "POST") {
@@ -20,6 +21,9 @@ export default function handler(req, res) {
       .json({ error: "Unknown or mismatched jobId", reason: result.reason });
     return;
   }
+
+  // Update roundtrip group (if this encrypt job belongs to one)
+  noteEncryptResult(jobId, result.valid, result.expectedCtHex);
 
   res.status(200).json({
     ok: true,

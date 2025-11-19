@@ -1,5 +1,4 @@
 // pages/api/roundtrip-request.js
-import { createJob } from "./_jobs";
 import { startRoundtrip } from "./_roundtrip";
 
 export default function handler(req, res) {
@@ -22,29 +21,19 @@ export default function handler(req, res) {
     return;
   }
   if (ptHex.length !== 32) {
-    res.status(400).json({ error: "ptHex must be 32 hex chars (128-bit block)" });
+    res.status(400).json({ error: "ptHex must be 32 hex chars" });
     return;
   }
 
-  const keyUp = keyHex.toUpperCase();
-  const ptUp = ptHex.toUpperCase();
-  const tok = (token || "0").toString().toUpperCase();
-
-  const groupId = "rt-" + Date.now().toString();
-
-  // Start roundtrip tracking
-  startRoundtrip(groupId, tok, keyUp, ptUp);
-
-  // Create an ENCRYPT job with roundtrip metadata
-  const job = createJob(keyUp, ptUp, tok, {
-    roundtrip: true,
-    groupId,
-    origPtHex: ptUp,
-  });
+  const { groupId, encJobId } = startRoundtrip(
+    keyHex.toUpperCase(),
+    ptHex.toUpperCase(),
+    token || "0"
+  );
 
   res.status(200).json({
     groupId,
-    encJobId: job.id,
-    status: job.status,
+    encJobId,
+    status: "waiting-enc",
   });
 }

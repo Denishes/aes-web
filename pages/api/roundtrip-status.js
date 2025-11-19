@@ -13,26 +13,11 @@ export default function handler(req, res) {
     return;
   }
 
-  const st = getRoundtripStatus(groupId.toString());
+  const st = getRoundtripStatus(groupId);
   if (!st.exists) {
-    res.status(404).json({ error: "Roundtrip group not found" });
+    res.status(404).json({ error: "Roundtrip group not found or expired" });
     return;
   }
 
-  res.status(200).json({
-    groupId: st.groupId,
-    token: st.token,
-    keyHex: st.keyHex,
-    ptHexIn: st.ptHexIn,
-
-    encCtHex: st.encCtHex,
-    encValid: st.encValid,
-    encExpectedCtHex: st.encExpectedCtHex,
-
-    decPtHex: st.decPtHex,
-    decValid: st.decValid,
-    decExpectedPtHex: st.decExpectedPtHex,
-
-    roundtripOk: st.roundtripOk,
-  });
+  res.status(200).json(st);
 }
