@@ -73,7 +73,7 @@ export default function Home() {
   const [token, setToken] = useState("0");
   const [keyHex, setKeyHex] = useState(TOKEN_KEYS["0"].keyHex);
 
-  // Encrypt panel state
+  // ===== Encrypt panel state (ENC only path) =====
   const [ptHex, setPtHex] = useState(
     "00112233445566778899AABBCCDDEEFF"
   );
@@ -84,7 +84,7 @@ export default function Home() {
   const [encValid, setEncValid] = useState(null);
   const encPollTimer = useRef(null);
 
-  // Decrypt panel state
+  // ===== Decrypt panel state =====
   const [decCtHex, setDecCtHex] = useState(
     "69C4E0D86A7B0430D8CDB78070B4C55A"
   );
@@ -95,6 +95,17 @@ export default function Home() {
   const [decValid, setDecValid] = useState(null);
   const decPollTimer = useRef(null);
 
+  // ===== Roundtrip mode state (ENC → DEC auto) =====
+  const [roundtripMode, setRoundtripMode] = useState(false);
+  const [rtGroupId, setRtGroupId] = useState(null);
+  const [rtStatus, setRtStatus] = useState("");
+  const [rtEncCtHex, setRtEncCtHex] = useState("");
+  const [rtEncValid, setRtEncValid] = useState(null);
+  const [rtDecPtHex, setRtDecPtHex] = useState("");
+  const [rtDecValid, setRtDecValid] = useState(null);
+  const [rtRoundtripOk, setRtRoundtripOk] = useState(null);
+  const rtPollTimer = useRef(null);
+
   // ========== Shared token handler ==========
   function onTokenChange(e) {
     const t = e.target.value;
@@ -104,7 +115,7 @@ export default function Home() {
     else setKeyHex("");
   }
 
-  // ========== Encrypt API logic ==========
+  // ========== ENC-only API logic ==========
   async function submitEncrypt(e) {
     e.preventDefault();
     setEncCtHex("");
@@ -252,7 +263,136 @@ export default function Home() {
     }
   }
 
-  // ========== UI helpers ==========
+  // ========== Roundtrip API logic ==========
+  async function submitRoundtrip(e) {
+    e.preventDefault();
+    // Reset roundtrip state
+    setRtEncCtHex("");
+    setRtEncValid(null);
+    setRtDecPtHex("");
+    setRtDecValid(null);
+    setRtRoundtripOk(null);
+    setRtStatus("Submitting roundtrip (ENC → DEC) job...");
+
+    const trimmedKey = keyHex.trim();
+    const trimmedPt = ptHex.trim();
+
+    try {
+      const res = await fetch("/api/roundtrip-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token,
+          keyHex: trimmedKey,
+          ptHex: trimmedPt,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setRtStatus("Error: " + (data.error || res.statusText));
+        return;
+      }
+      setRtGroupId(data.groupId);
+      setRtStatus("Roundtrip started: waiting for ENC FPGA...");
+      startRtPolling(data.groupId);
+    } catch (err) {
+      setRtStatus("Request error: " + err.message);
+    }
+  }
+
+  async function pollRoundtripOnce(groupId) {
+    try {
+      const res = await fetch(
+        `/api/roundtrip-status?groupId=${encodeURIComponent(groupId)}`
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setRtStatus("Status error: " + (data.error || res.statusText));
+        stopRtPolling();
+        return;
+      }
+
+      // Update general status
+      if (data.status === "waiting-enc") {
+        setRtStatus("Waiting for ENC FPGA...");
+      } else if (data.status === "waiting-dec") {
+        setRtStatus("ENC done, waiting for DEC FPGA...");
+      } else if (data.status === "done") {
+        setRtStatus("Roundtrip done");
+      } else {
+        setRtStatus("Status: " + data.status);
+      }
+
+      // Update ENC part
+      if (data.enc) {
+        setRtEncCtHex(data.enc.ctHex || "");
+        setRtEncValid(data.enc.valid);
+      } else {
+        setRtEncCtHex("");
+        setRtEncValid(null);
+      }
+
+      // Update DEC part
+      if (data.dec) {
+        setRtDecPtHex(data.dec.ptHex || "");
+        setRtDecValid(data.dec.valid);
+      } else {
+        setRtDecPtHex("");
+        setRtDecValid(null);
+      }
+
+      // Roundtrip flag
+      setRtRoundtripOk(data.roundtripOk ?? null);
+
+      if (data.status === "done") {
+        stopRtPolling();
+      }
+    } catch (err) {
+      setRtStatus("Poll error: " + err.message);
+      stopRtPolling();
+    }
+  }
+
+  function startRtPolling(groupId) {
+    stopRtPolling();
+    rtPollTimer.current = setInterval(
+      () => pollRoundtripOnce(groupId),
+      1000
+    );
+  }
+
+  function stopRtPolling() {
+    if (rtPollTimer.current) {
+      clearInterval(rtPollTimer.current);
+      rtPollTimer.current = null;
+    }
+  }
+
+  // Toggle handler
+  function toggleRoundtrip() {
+    const next = !roundtripMode;
+    setRoundtripMode(next);
+    if (next) {
+      // leaving ENC-only → stop ENC polling
+      stopEncPolling();
+      setEncStatus("");
+      setEncCtHex("");
+      setEncExpectedHex("");
+      setEncValid(null);
+    } else {
+      // leaving roundtrip → stop RT polling
+      stopRtPolling();
+      setRtStatus("");
+      setRtEncCtHex("");
+      setRtEncValid(null);
+      setRtDecPtHex("");
+      setRtDecValid(null);
+      setRtRoundtripOk(null);
+      setRtGroupId(null);
+    }
+  }
+
+  // ========== UI boxes ==========
   const encValidBox =
     encValid === true ? (
       <div
@@ -319,6 +459,39 @@ export default function Home() {
       </div>
     ) : null;
 
+  const roundtripBanner =
+    rtRoundtripOk === true ? (
+      <div
+        style={{
+          marginTop: "0.9rem",
+          padding: "0.7rem 1rem",
+          borderRadius: "10px",
+          backgroundColor: "#e6ffed",
+          border: "1px solid #16a34a",
+          color: "#166534",
+          fontWeight: 600,
+          fontSize: "0.9rem",
+        }}
+      >
+        ✅ Roundtrip OK: DEC plaintext matches original.
+      </div>
+    ) : rtRoundtripOk === false ? (
+      <div
+        style={{
+          marginTop: "0.9rem",
+          padding: "0.7rem 1rem",
+          borderRadius: "10px",
+          backgroundColor: "#fef2f2",
+          border: "1px solid #b91c1c",
+          color: "#7f1d1d",
+          fontWeight: 600,
+          fontSize: "0.9rem",
+        }}
+      >
+        ❌ Roundtrip FAILED: DEC plaintext differs from original.
+      </div>
+    ) : null;
+
   return (
     <>
       <main
@@ -381,13 +554,13 @@ export default function Home() {
                 color: "#cbd5f5",
               }}
             >
-              Choose a key token, then use the top panel to encrypt and the
-              bottom panel to decrypt using separate FPGA cores. The server
-              validates each result against software AES.
+              Choose a key token. You can run encryption and decryption
+              independently, or enable roundtrip mode to stream the
+              ciphertext from ENC FPGA into DEC FPGA automatically.
             </p>
           </header>
 
-          {/* Shared token + key */}
+          {/* Shared token + key + roundtrip toggle */}
           <section
             style={{
               marginBottom: "1.5rem",
@@ -398,8 +571,9 @@ export default function Home() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 3fr",
-                gap: "1rem 1.5rem",
+                gridTemplateColumns: "1.4fr 2.6fr",
+                columnGap: "1.5rem",
+                rowGap: "0.8rem",
                 alignItems: "flex-start",
               }}
             >
@@ -464,10 +638,50 @@ export default function Home() {
                   {keyHex}
                 </div>
               </div>
+
+              <div
+                style={{
+                  gridColumn: "1 / 3",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.55rem",
+                  marginTop: "0.4rem",
+                }}
+              >
+                <label
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "0.4rem",
+                    cursor: "pointer",
+                    fontSize: "0.87rem",
+                    color: "#e5e7eb",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={roundtripMode}
+                    onChange={toggleRoundtrip}
+                    style={{ cursor: "pointer" }}
+                  />
+                  <span>
+                    Roundtrip via both FPGAs (auto ENC → DEC)
+                  </span>
+                </label>
+                <span
+                  style={{
+                    fontSize: "0.78rem",
+                    color: "#9ca3af",
+                  }}
+                >
+                  Off = encrypt only. On = encrypt and then decrypt with
+                  the same key and ciphertext.
+                </span>
+              </div>
             </div>
           </section>
 
-          {/* Encrypt panel */}
+          {/* Encrypt / Roundtrip panel */}
           <section
             style={{
               marginBottom: "1.8rem",
@@ -483,11 +697,13 @@ export default function Home() {
                 color: "#e5e7eb",
               }}
             >
-              Encryption (FPGA ENC node)
+              {roundtripMode
+                ? "Roundtrip (ENC → DEC automatically)"
+                : "Encryption (FPGA ENC node)"}
             </h2>
 
             <form
-              onSubmit={submitEncrypt}
+              onSubmit={roundtripMode ? submitRoundtrip : submitEncrypt}
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr",
@@ -535,8 +751,9 @@ export default function Home() {
                     fontSize: "0.9rem",
                     fontWeight: 500,
                     cursor: "pointer",
-                    background:
-                      "linear-gradient(135deg, #0ea5e9 0%, #22c55e 50%, #a855f7 100%)",
+                    background: roundtripMode
+                      ? "linear-gradient(135deg, #22c55e 0%, #0ea5e9 40%, #a855f7 100%)"
+                      : "linear-gradient(135deg, #0ea5e9 0%, #22c55e 50%, #a855f7 100%)",
                     color: "#0f172a",
                     boxShadow:
                       "0 8px 20px rgba(56, 189, 248, 0.5)",
@@ -556,11 +773,14 @@ export default function Home() {
                       "0 8px 20px rgba(56, 189, 248, 0.5)";
                   }}
                 >
-                  Send to ENC FPGA
+                  {roundtripMode
+                    ? "Run roundtrip ENC → DEC"
+                    : "Send to ENC FPGA"}
                 </button>
               </div>
             </form>
 
+            {/* Status line(s) */}
             <div
               style={{
                 marginTop: "0.8rem",
@@ -569,21 +789,38 @@ export default function Home() {
               }}
             >
               <strong>Status:</strong>{" "}
-              {encStatus || "Idle"}
+              {roundtripMode
+                ? rtStatus || "Idle (roundtrip mode)"
+                : encStatus || "Idle"}
             </div>
-            {encJobId && (
-              <div
-                style={{
-                  marginTop: "0.2rem",
-                  fontSize: "0.8rem",
-                  color: "#9ca3af",
-                }}
-              >
-                <strong>Job ID:</strong> {encJobId}
-              </div>
+            {roundtripMode ? (
+              rtGroupId && (
+                <div
+                  style={{
+                    marginTop: "0.2rem",
+                    fontSize: "0.8rem",
+                    color: "#9ca3af",
+                  }}
+                >
+                  <strong>Roundtrip group ID:</strong> {rtGroupId}
+                </div>
+              )
+            ) : (
+              encJobId && (
+                <div
+                  style={{
+                    marginTop: "0.2rem",
+                    fontSize: "0.8rem",
+                    color: "#9ca3af",
+                  }}
+                >
+                  <strong>Job ID:</strong> {encJobId}
+                </div>
+              )
             )}
 
-            {encCtHex && (
+            {/* ENC-only results */}
+            {!roundtripMode && encCtHex && (
               <div
                 style={{
                   marginTop: "0.75rem",
@@ -643,10 +880,111 @@ export default function Home() {
               </div>
             )}
 
-            {encValidBox}
+            {!roundtripMode && encValidBox}
+
+            {/* Roundtrip results */}
+            {roundtripMode && (rtEncCtHex || rtDecPtHex) && (
+              <div
+                style={{
+                  marginTop: "0.9rem",
+                  padding: "0.7rem 0.8rem",
+                  borderRadius: "8px",
+                  background: "rgba(15, 23, 42, 0.9)",
+                  border:
+                    "1px solid rgba(148, 163, 184, 0.5)",
+                }}
+              >
+                {rtEncCtHex && (
+                  <>
+                    <div
+                      style={{
+                        fontSize: "0.85rem",
+                        fontWeight: 500,
+                        marginBottom: "0.25rem",
+                        color: "#e5e7eb",
+                      }}
+                    >
+                      Ciphertext from ENC FPGA
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: "monospace",
+                        fontSize: "0.9rem",
+                        wordBreak: "break-all",
+                        color: "#e5e7eb",
+                      }}
+                    >
+                      {rtEncCtHex}
+                    </div>
+                    {rtEncValid != null && (
+                      <div
+                        style={{
+                          marginTop: "0.25rem",
+                          fontSize: "0.8rem",
+                          color: rtEncValid
+                            ? "#22c55e"
+                            : "#f97316",
+                        }}
+                      >
+                        ENC vs software AES ENC:{" "}
+                        {rtEncValid ? "OK" : "mismatch"}
+                      </div>
+                    )}
+                    <div
+                      style={{
+                        margin: "0.7rem 0 0.3rem",
+                        borderTop:
+                          "1px dashed rgba(148, 163, 184, 0.6)",
+                      }}
+                    />
+                  </>
+                )}
+
+                {rtDecPtHex && (
+                  <>
+                    <div
+                      style={{
+                        fontSize: "0.85rem",
+                        fontWeight: 500,
+                        marginBottom: "0.25rem",
+                        color: "#e5e7eb",
+                      }}
+                    >
+                      Plaintext from DEC FPGA
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: "monospace",
+                        fontSize: "0.9rem",
+                        wordBreak: "break-all",
+                        color: "#e5e7eb",
+                      }}
+                    >
+                      {rtDecPtHex}
+                    </div>
+                    {rtDecValid != null && (
+                      <div
+                        style={{
+                          marginTop: "0.25rem",
+                          fontSize: "0.8rem",
+                          color: rtDecValid
+                            ? "#22c55e"
+                            : "#f97316",
+                        }}
+                      >
+                        DEC vs software AES DEC:{" "}
+                        {rtDecValid ? "OK" : "mismatch"}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {roundtripMode && roundtripBanner}
           </section>
 
-          {/* Decrypt panel */}
+          {/* Decrypt panel (manual) */}
           <section>
             <h2
               style={{
@@ -656,7 +994,7 @@ export default function Home() {
                 color: "#e5e7eb",
               }}
             >
-              Decryption (FPGA DEC node)
+              Manual decryption (FPGA DEC node)
             </h2>
 
             <form
