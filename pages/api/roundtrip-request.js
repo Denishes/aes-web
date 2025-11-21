@@ -7,28 +7,54 @@ export default function handler(req, res) {
     return;
   }
 
-  const { keyHex, ptHex, token } = req.body || {};
+  const { keyHex, ptHex, ptAscii, token } = req.body || {};
 
-  if (!keyHex || !ptHex) {
-    res.status(400).json({ error: "keyHex and ptHex required" });
+  if (!keyHex) {
+    res.status(400).json({ error: "keyHex is required" });
     return;
   }
 
-  if (![32, 48, 64].includes(keyHex.length)) {
+  let ptHexFinal = ptHex;
+
+  // If ptAscii is provided and ptHex is not, convert ASCII → hex with space padding to 16 bytes
+  if (ptAscii && !ptHex) {
+    const padded = (ptAscii + " ".repeat(16)).slice(0, 16);
+    let h = "";
+    for (let i = 0; i < 16; i++) {
+      const code = padded.charCodeAt(i) & 0xff;
+      h += code.toString(16).padStart(2, "0");
+    }
+    ptHexFinal = h.toUpperCase();
+  }
+
+  if (!ptHexFinal) {
     res
       .status(400)
-      .json({ error: "keyHex must be 32/48/64 hex chars (128/192/256 bits)" });
+      .json({ error: "Either ptHex or ptAscii must be provided" });
     return;
   }
-  if (ptHex.length !== 32) {
-    res.status(400).json({ error: "ptHex must be 32 hex chars" });
+
+  const k = keyHex.toUpperCase();
+  const p = ptHexFinal.toUpperCase();
+
+  if (![32, 48, 64].includes(k.length)) {
+    res.status(400).json({
+      error:
+        "keyHex must be 32, 48 or 64 hex chars (128/192/256 bits)",
+    });
+    return;
+  }
+  if (p.length !== 32) {
+    res
+      .status(400)
+      .json({ error: "ptHex must be exactly 32 hex chars" });
     return;
   }
 
   const { groupId, encJobId } = startRoundtrip(
-    keyHex.toUpperCase(),
-    ptHex.toUpperCase(),
-    token || "0"
+    k,
+    p,
+    (token || "0").toString()
   );
 
   res.status(200).json({

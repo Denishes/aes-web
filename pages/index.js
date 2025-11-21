@@ -1,3 +1,4 @@
+// pages/index.js
 import { useState, useRef } from "react";
 
 // EXACT match to your FPGA key_lookup in top.v
@@ -73,10 +74,14 @@ export default function Home() {
   const [token, setToken] = useState("0");
   const [keyHex, setKeyHex] = useState(TOKEN_KEYS["0"].keyHex);
 
-  // ===== Encrypt panel state (ENC only path) =====
+  // Plaintext mode: hex or ASCII
+  const [asciiMode, setAsciiMode] = useState(false);
   const [ptHex, setPtHex] = useState(
     "00112233445566778899AABBCCDDEEFF"
   );
+  const [ptAscii, setPtAscii] = useState("");
+
+  // Encrypt panel (ENC only)
   const [encJobId, setEncJobId] = useState(null);
   const [encStatus, setEncStatus] = useState("");
   const [encCtHex, setEncCtHex] = useState("");
@@ -84,7 +89,7 @@ export default function Home() {
   const [encValid, setEncValid] = useState(null);
   const encPollTimer = useRef(null);
 
-  // ===== Decrypt panel state =====
+  // Decrypt panel
   const [decCtHex, setDecCtHex] = useState(
     "69C4E0D86A7B0430D8CDB78070B4C55A"
   );
@@ -95,7 +100,7 @@ export default function Home() {
   const [decValid, setDecValid] = useState(null);
   const decPollTimer = useRef(null);
 
-  // ===== Roundtrip mode state (ENC → DEC auto) =====
+  // Roundtrip mode (ENC → DEC auto)
   const [roundtripMode, setRoundtripMode] = useState(false);
   const [rtGroupId, setRtGroupId] = useState(null);
   const [rtStatus, setRtStatus] = useState("");
@@ -104,6 +109,9 @@ export default function Home() {
   const [rtDecPtHex, setRtDecPtHex] = useState("");
   const [rtDecValid, setRtDecValid] = useState(null);
   const [rtRoundtripOk, setRtRoundtripOk] = useState(null);
+  const [rtAsciiOriginal, setRtAsciiOriginal] = useState("");
+  const [rtAsciiDec, setRtAsciiDec] = useState("");
+  const [rtTiming, setRtTiming] = useState(null);
   const rtPollTimer = useRef(null);
 
   // ========== Shared token handler ==========
@@ -263,29 +271,41 @@ export default function Home() {
     }
   }
 
-  // ========== Roundtrip API logic ==========
+  // ========== Roundtrip API logic (ENC → DEC) ==========
   async function submitRoundtrip(e) {
     e.preventDefault();
+
     // Reset roundtrip state
     setRtEncCtHex("");
     setRtEncValid(null);
     setRtDecPtHex("");
     setRtDecValid(null);
     setRtRoundtripOk(null);
+    setRtAsciiOriginal("");
+    setRtAsciiDec("");
+    setRtTiming(null);
     setRtStatus("Submitting roundtrip (ENC → DEC) job...");
 
     const trimmedKey = keyHex.trim();
-    const trimmedPt = ptHex.trim();
+    const trimmedPtHex = ptHex.trim();
+
+    const body = asciiMode
+      ? {
+          token,
+          keyHex: trimmedKey,
+          ptAscii,
+        }
+      : {
+          token,
+          keyHex: trimmedKey,
+          ptHex: trimmedPtHex,
+        };
 
     try {
       const res = await fetch("/api/roundtrip-request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token,
-          keyHex: trimmedKey,
-          ptHex: trimmedPt,
-        }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -312,7 +332,6 @@ export default function Home() {
         return;
       }
 
-      // Update general status
       if (data.status === "waiting-enc") {
         setRtStatus("Waiting for ENC FPGA...");
       } else if (data.status === "waiting-dec") {
@@ -323,26 +342,36 @@ export default function Home() {
         setRtStatus("Status: " + data.status);
       }
 
-      // Update ENC part
       if (data.enc) {
         setRtEncCtHex(data.enc.ctHex || "");
-        setRtEncValid(data.enc.valid);
+        setRtEncValid(data.enc.valid ?? null);
       } else {
         setRtEncCtHex("");
         setRtEncValid(null);
       }
 
-      // Update DEC part
       if (data.dec) {
         setRtDecPtHex(data.dec.ptHex || "");
-        setRtDecValid(data.dec.valid);
+        setRtDecValid(data.dec.valid ?? null);
       } else {
         setRtDecPtHex("");
         setRtDecValid(null);
       }
 
-      // Roundtrip flag
       setRtRoundtripOk(data.roundtripOk ?? null);
+
+      if (data.ptAsciiOriginal !== undefined) {
+        setRtAsciiOriginal(data.ptAsciiOriginal || "");
+      }
+      if (data.ptAscii !== undefined) {
+        setRtAsciiDec(data.ptAscii || "");
+      }
+
+      if (data.timing) {
+        setRtTiming(data.timing);
+      } else {
+        setRtTiming(null);
+      }
 
       if (data.status === "done") {
         stopRtPolling();
@@ -368,19 +397,18 @@ export default function Home() {
     }
   }
 
-  // Toggle handler
   function toggleRoundtrip() {
     const next = !roundtripMode;
     setRoundtripMode(next);
     if (next) {
-      // leaving ENC-only → stop ENC polling
+      // entering roundtrip -> clear ENC-only state
       stopEncPolling();
       setEncStatus("");
       setEncCtHex("");
       setEncExpectedHex("");
       setEncValid(null);
     } else {
-      // leaving roundtrip → stop RT polling
+      // leaving roundtrip -> clear RT state
       stopRtPolling();
       setRtStatus("");
       setRtEncCtHex("");
@@ -388,11 +416,14 @@ export default function Home() {
       setRtDecPtHex("");
       setRtDecValid(null);
       setRtRoundtripOk(null);
+      setRtAsciiOriginal("");
+      setRtAsciiDec("");
+      setRtTiming(null);
       setRtGroupId(null);
     }
   }
 
-  // ========== UI boxes ==========
+  // ========== UI helper boxes ==========
   const encValidBox =
     encValid === true ? (
       <div
@@ -492,6 +523,33 @@ export default function Home() {
       </div>
     ) : null;
 
+  function formatTimeNs(tSeconds) {
+    if (tSeconds == null) return "";
+    const ns = tSeconds * 1e9;
+    if (ns < 1000) return `${ns.toFixed(1)} ns`;
+    const us = ns / 1e3;
+    if (us < 1000) return `${us.toFixed(1)} µs`;
+    const ms = us / 1e3;
+    return `${ms.toFixed(3)} ms`;
+  }
+
+  const timingBox =
+    rtTiming != null ? (
+      <div
+        style={{
+          marginTop: "0.6rem",
+          fontSize: "0.8rem",
+          color: "#9ca3af",
+        }}
+      >
+        <strong>Theoretical AES core time</strong> (f ={" "}
+        {rtTiming.fclkMHz} MHz, {rtTiming.cyclesPerBlock} cycles/block):{" "}
+        ENC {formatTimeNs(rtTiming.encTime_s)}, DEC{" "}
+        {formatTimeNs(rtTiming.decTime_s)}, total{" "}
+        {formatTimeNs(rtTiming.totalTime_s)}.
+      </div>
+    ) : null;
+
   return (
     <>
       <main
@@ -554,9 +612,11 @@ export default function Home() {
                 color: "#cbd5f5",
               }}
             >
-              Choose a key token. You can run encryption and decryption
-              independently, or enable roundtrip mode to stream the
-              ciphertext from ENC FPGA into DEC FPGA automatically.
+              Choose a key token. You can run encryption and
+              decryption independently, or enable roundtrip mode to
+              stream the ciphertext from ENC FPGA into DEC FPGA
+              automatically. Plaintext can be given in hex or ASCII
+              (≤16 chars, padded with spaces).
             </p>
           </header>
 
@@ -674,7 +734,7 @@ export default function Home() {
                     color: "#9ca3af",
                   }}
                 >
-                  Off = encrypt only. On = encrypt and then decrypt with
+                  Off = encrypt only. On = encrypt then decrypt with
                   the same key and ciphertext.
                 </span>
               </div>
@@ -710,35 +770,112 @@ export default function Home() {
                 gap: "0.9rem",
               }}
             >
+              {/* Plaintext mode selector */}
               <div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "1rem",
+                    marginBottom: "0.35rem",
+                  }}
+                >
+                  <label
+                    style={{
+                      fontWeight: 500,
+                      fontSize: "0.85rem",
+                      color: "#e5e7eb",
+                    }}
+                  >
+                    Plaintext mode
+                  </label>
+                  <label
+                    style={{
+                      fontSize: "0.85rem",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "0.25rem",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="ptmode"
+                      checked={!asciiMode}
+                      onChange={() => setAsciiMode(false)}
+                    />
+                    Hex (32 chars)
+                  </label>
+                  <label
+                    style={{
+                      fontSize: "0.85rem",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "0.25rem",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="ptmode"
+                      checked={asciiMode}
+                      onChange={() => setAsciiMode(true)}
+                    />
+                    ASCII (≤ 16 chars)
+                  </label>
+                </div>
+
                 <label
                   style={{
                     display: "block",
-                    fontSize: "0.85rem",
-                    fontWeight: 500,
-                    marginBottom: "0.35rem",
-                    color: "#e5e7eb",
+                    fontSize: "0.8rem",
+                    fontWeight: 400,
+                    marginBottom: "0.2rem",
+                    color: "#9ca3af",
                   }}
                 >
-                  Plaintext (128-bit, hex)
+                  {asciiMode
+                    ? "ASCII text will be padded with spaces to 16 bytes and converted to hex."
+                    : "128-bit plaintext as 32 hex characters."}
                 </label>
-                <input
-                  value={ptHex}
-                  onChange={(e) =>
-                    setPtHex(e.target.value.trim())
-                  }
-                  style={{
-                    width: "100%",
-                    padding: "0.5rem 0.6rem",
-                    borderRadius: "8px",
-                    border:
-                      "1px solid rgba(148, 163, 184, 0.7)",
-                    background: "rgba(15, 23, 42, 0.9)",
-                    color: "#f9fafb",
-                    fontFamily: "monospace",
-                    fontSize: "0.9rem",
-                  }}
-                />
+
+                {asciiMode ? (
+                  <input
+                    value={ptAscii}
+                    onChange={(e) =>
+                      setPtAscii(e.target.value.slice(0, 16))
+                    }
+                    placeholder="ASCII text (max 16 chars)"
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem 0.6rem",
+                      borderRadius: "8px",
+                      border:
+                        "1px solid rgba(148, 163, 184, 0.7)",
+                      background: "rgba(15, 23, 42, 0.9)",
+                      color: "#f9fafb",
+                      fontFamily: "monospace",
+                      fontSize: "0.9rem",
+                    }}
+                  />
+                ) : (
+                  <input
+                    value={ptHex}
+                    onChange={(e) =>
+                      setPtHex(e.target.value.trim())
+                    }
+                    placeholder="32 hex chars"
+                    style={{
+                      width: "100%",
+                      padding: "0.5rem 0.6rem",
+                      borderRadius: "8px",
+                      border:
+                        "1px solid rgba(148, 163, 184, 0.7)",
+                      background: "rgba(15, 23, 42, 0.9)",
+                      color: "#f9fafb",
+                      fontFamily: "monospace",
+                      fontSize: "0.9rem",
+                    }}
+                  />
+                )}
               </div>
 
               <div style={{ textAlign: "right" }}>
@@ -780,7 +917,6 @@ export default function Home() {
               </div>
             </form>
 
-            {/* Status line(s) */}
             <div
               style={{
                 marginTop: "0.8rem",
@@ -802,7 +938,8 @@ export default function Home() {
                     color: "#9ca3af",
                   }}
                 >
-                  <strong>Roundtrip group ID:</strong> {rtGroupId}
+                  <strong>Roundtrip group ID:</strong>{" "}
+                  {rtGroupId}
                 </div>
               )
             ) : (
@@ -950,7 +1087,7 @@ export default function Home() {
                         color: "#e5e7eb",
                       }}
                     >
-                      Plaintext from DEC FPGA
+                      Plaintext from DEC FPGA (hex)
                     </div>
                     <div
                       style={{
@@ -978,10 +1115,52 @@ export default function Home() {
                     )}
                   </>
                 )}
+
+                {(rtAsciiOriginal || rtAsciiDec) && (
+                  <div
+                    style={{
+                      marginTop: "0.7rem",
+                      paddingTop: "0.5rem",
+                      borderTop:
+                        "1px dashed rgba(148, 163, 184, 0.6)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "0.8rem",
+                        fontWeight: 500,
+                        marginBottom: "0.2rem",
+                        color: "#a5b4fc",
+                      }}
+                    >
+                      ASCII view (spaces padded to 16 bytes)
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "0.85rem",
+                        color: "#e5e7eb",
+                        marginBottom: "0.2rem",
+                      }}
+                    >
+                      <strong>Original:</strong>{" "}
+                      {rtAsciiOriginal || "—"}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "0.85rem",
+                        color: "#e5e7eb",
+                      }}
+                    >
+                      <strong>Decrypted:</strong>{" "}
+                      {rtAsciiDec || "—"}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
             {roundtripMode && roundtripBanner}
+            {roundtripMode && timingBox}
           </section>
 
           {/* Decrypt panel (manual) */}
