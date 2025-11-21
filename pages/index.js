@@ -147,6 +147,11 @@ export default function Home() {
     ? asciiToHexPadded16(ptAscii)
     : ptHex.trim();
 
+  // Ciphertext ASCII preview (manual decrypt input)
+  const decCtAsciiPreview = decCtHex
+    ? hexToAsciiFromHex(decCtHex)
+    : "";
+
   // ========== Shared token handler ==========
   function onTokenChange(e) {
     const t = e.target.value;
@@ -1283,6 +1288,29 @@ export default function Home() {
                     fontSize: "0.9rem",
                   }}
                 />
+                {/* Ciphertext ASCII preview */}
+                <div
+                  style={{
+                    marginTop: "0.4rem",
+                    fontSize: "0.8rem",
+                    color: "#9ca3af",
+                  }}
+                >
+                  <span style={{ fontWeight: 500 }}>
+                    Ciphertext ASCII preview:
+                  </span>{" "}
+                  <span
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: "0.82rem",
+                      color: "#e5e7eb",
+                    }}
+                  >
+                    {decCtHex
+                      ? decCtAsciiPreview || "⟨non-printable⟩"
+                      : "—"}
+                  </span>
+                </div>
               </div>
 
               <div style={{ textAlign: "right" }}>
