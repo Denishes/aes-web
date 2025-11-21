@@ -2,8 +2,8 @@
 // Roundtrip orchestration: ENC → DEC for a single 128-bit block.
 //
 // Uses:
-//   - createJob, getStatus from ./_jobs      (encrypt side)
-//   - createDecJob, getDecStatus from ./_jobs_dec  (decrypt side)
+//   - createJob, getStatus from ./_jobs          (encrypt side)
+//   - createDecJob, getDecStatus from ./_jobs_dec (decrypt side)
 
 import { createJob, getStatus as getEncStatus } from "./_jobs";
 import {
@@ -56,7 +56,7 @@ export function noteEncryptResult(jobId, valid, expectedCtHex) {
   currentGroup.encValid = valid;
   currentGroup.encExpectedCtHex = expectedCtHex;
 
-  // If OK, start decrypt job with same key and ciphertext
+  // If we have a ciphertext, start decrypt job with same key and token
   if (normCt) {
     const decJob = createDecJob(
       currentGroup.keyHex,

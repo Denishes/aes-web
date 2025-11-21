@@ -69,6 +69,32 @@ const TOKEN_KEYS = {
   },
 };
 
+// ASCII → hex (16 bytes, padded with spaces, uppercase hex)
+function asciiToHexPadded16(str) {
+  if (!str || str.length === 0) return "";
+  const padded = (str + " ".repeat(16)).slice(0, 16);
+  let out = "";
+  for (let i = 0; i < 16; i++) {
+    const code = padded.charCodeAt(i) & 0xff;
+    out += code.toString(16).padStart(2, "0");
+  }
+  return out.toUpperCase();
+}
+
+// Hex → ASCII (strip non-hex, decode bytes, trim padding spaces)
+function hexToAsciiFromHex(hex) {
+  if (!hex) return "";
+  const clean = hex.replace(/[^0-9A-Fa-f]/g, "");
+  let out = "";
+  for (let i = 0; i + 1 < clean.length; i += 2) {
+    const byte = parseInt(clean.slice(i, i + 2), 16);
+    if (!Number.isNaN(byte)) {
+      out += String.fromCharCode(byte);
+    }
+  }
+  return out.replace(/\s+$/g, "");
+}
+
 export default function Home() {
   // Shared: token + key
   const [token, setToken] = useState("0");
@@ -98,6 +124,8 @@ export default function Home() {
   const [decPtHex, setDecPtHex] = useState("");
   const [decExpectedHex, setDecExpectedHex] = useState("");
   const [decValid, setDecValid] = useState(null);
+  const [decPtAscii, setDecPtAscii] = useState("");
+  const [decExpectedAscii, setDecExpectedAscii] = useState("");
   const decPollTimer = useRef(null);
 
   // Roundtrip mode (ENC → DEC auto)
@@ -113,6 +141,11 @@ export default function Home() {
   const [rtAsciiDec, setRtAsciiDec] = useState("");
   const [rtTiming, setRtTiming] = useState(null);
   const rtPollTimer = useRef(null);
+
+  // Effective plaintext hex that actually goes into the ENC FPGA
+  const effectivePtHex = asciiMode
+    ? asciiToHexPadded16(ptAscii)
+    : ptHex.trim();
 
   // ========== Shared token handler ==========
   function onTokenChange(e) {
@@ -132,7 +165,11 @@ export default function Home() {
     setEncStatus("Submitting encrypt job...");
 
     const trimmedKey = keyHex.trim();
-    const trimmedPt = ptHex.trim();
+
+    // If ASCII mode in ENC-only, we convert here and send ptHex
+    const ptHexToSend = asciiMode
+      ? asciiToHexPadded16(ptAscii)
+      : ptHex.trim();
 
     try {
       const res = await fetch("/api/encrypt-request", {
@@ -141,7 +178,7 @@ export default function Home() {
         body: JSON.stringify({
           token,
           keyHex: trimmedKey,
-          ptHex: trimmedPt,
+          ptHex: ptHexToSend,
         }),
       });
       const data = await res.json();
@@ -203,6 +240,8 @@ export default function Home() {
     setDecPtHex("");
     setDecExpectedHex("");
     setDecValid(null);
+    setDecPtAscii("");
+    setDecExpectedAscii("");
     setDecStatus("Submitting decrypt job...");
 
     const trimmedKey = keyHex.trim();
@@ -244,9 +283,18 @@ export default function Home() {
       }
       if (data.status === "done") {
         setDecStatus("Decryption done");
-        setDecPtHex(data.ptHex || "");
-        setDecExpectedHex(data.expectedPtHex || "");
+
+        const actualPt = data.ptHex || "";
+        const expectedPt = data.expectedPtHex || "";
+
+        setDecPtHex(actualPt);
+        setDecExpectedHex(expectedPt);
         setDecValid(data.valid);
+
+        // ASCII previews for plaintext (actual + expected)
+        setDecPtAscii(hexToAsciiFromHex(actualPt));
+        setDecExpectedAscii(hexToAsciiFromHex(expectedPt));
+
         stopDecPolling();
       } else {
         setDecStatus(
@@ -876,6 +924,28 @@ export default function Home() {
                     }}
                   />
                 )}
+
+                {/* Effective plaintext hex preview */}
+                <div
+                  style={{
+                    marginTop: "0.4rem",
+                    fontSize: "0.8rem",
+                    color: "#9ca3af",
+                  }}
+                >
+                  <span style={{ fontWeight: 500 }}>
+                    Effective plaintext hex to FPGA:
+                  </span>{" "}
+                  <span
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: "0.82rem",
+                      color: "#e5e7eb",
+                    }}
+                  >
+                    {effectivePtHex || "—"}
+                  </span>
+                </div>
               </div>
 
               <div style={{ textAlign: "right" }}>
@@ -1292,7 +1362,7 @@ export default function Home() {
                     color: "#e5e7eb",
                   }}
                 >
-                  Plaintext from DEC FPGA
+                  Plaintext from DEC FPGA (hex)
                 </div>
                 <div
                   style={{
@@ -1329,6 +1399,49 @@ export default function Home() {
                       {decExpectedHex}
                     </div>
                   </>
+                )}
+
+                {/* ASCII previews for decrypted plaintext */}
+                {(decPtAscii || decExpectedAscii) && (
+                  <div
+                    style={{
+                      marginTop: "0.7rem",
+                      paddingTop: "0.5rem",
+                      borderTop:
+                        "1px dashed rgba(148, 163, 184, 0.6)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "0.8rem",
+                        fontWeight: 500,
+                        marginBottom: "0.2rem",
+                        color: "#a5b4fc",
+                      }}
+                    >
+                      ASCII plaintext view (trailing spaces
+                      stripped)
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "0.85rem",
+                        color: "#e5e7eb",
+                        marginBottom: "0.2rem",
+                      }}
+                    >
+                      <strong>Actual:</strong>{" "}
+                      {decPtAscii || "—"}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "0.85rem",
+                        color: "#e5e7eb",
+                      }}
+                    >
+                      <strong>Expected:</strong>{" "}
+                      {decExpectedAscii || "—"}
+                    </div>
+                  </div>
                 )}
               </div>
             )}
