@@ -2,14 +2,11 @@
 // Roundtrip orchestration: ENC → DEC for a single 128-bit block.
 //
 // Uses:
-//   - createJob, getStatus from ./_jobs          (encrypt side)
-//   - createDecJob, getDecStatus from ./_jobs_dec (decrypt side)
+//   - createJob, getStatus from ./_jobs             (encrypt side)
+//   - createDecJob, getDecStatus from ./_jobs_dec   (decrypt side)
 
 import { createJob, getStatus as getEncStatus } from "./_jobs";
-import {
-  createDecJob,
-  getDecStatus,
-} from "./_jobs_dec";
+import { createDecJob, getDecStatus } from "./_jobs_dec";
 
 let currentGroup = null;
 
@@ -28,16 +25,19 @@ export function startRoundtrip(keyHex, ptHex, token = "0") {
     keyHex,
     token,
     ptHexOriginal: ptHex,
+
     encJobId: encJob.id,
     encDone: false,
     encCtHex: null,
     encValid: null,
     encExpectedCtHex: null,
+
     decJobId: null,
     decDone: false,
     decPtHex: null,
     decValid: null,
     decExpectedPtHex: null,
+
     startedAt: Date.now(),
   };
 
@@ -58,11 +58,7 @@ export function noteEncryptResult(jobId, valid, expectedCtHex) {
 
   // If we have a ciphertext, start decrypt job with same key and token
   if (normCt) {
-    const decJob = createDecJob(
-      currentGroup.keyHex,
-      normCt,
-      currentGroup.token
-    );
+    const decJob = createDecJob(currentGroup.keyHex, normCt, currentGroup.token);
     currentGroup.decJobId = decJob.id;
   }
 }
@@ -90,28 +86,38 @@ export function getRoundtripStatus(groupId) {
   if (currentGroup.encDone && !currentGroup.decDone) status = "waiting-dec";
   else if (currentGroup.encDone && currentGroup.decDone) status = "done";
 
-  const normOrig =
-    (currentGroup.ptHexOriginal || "")
-      .toUpperCase()
-      .replace(/[^0-9A-F]/g, "");
-  const normDec =
-    (currentGroup.decPtHex || "")
-      .toUpperCase()
-      .replace(/[^0-9A-F]/g, "");
+  const normOrig = (currentGroup.ptHexOriginal || "")
+    .toUpperCase()
+    .replace(/[^0-9A-F]/g, "");
+  const normDec = (currentGroup.decPtHex || "")
+    .toUpperCase()
+    .replace(/[^0-9A-F]/g, "");
+
   const roundtripOk =
-    status === "done" &&
-    normOrig.length > 0 &&
-    normOrig === normDec;
+    status === "done" && normOrig.length > 0 && normOrig === normDec;
 
-  // Theoretical timing: AES-128, 10 cycles per block, 48 MHz
-  const AES_FCLK_MHZ = 48;
-  const AES_CYCLES_PER_BLOCK = 10;
-  const blocks = 1; // Step A: single block
+  // ------------------------------------------------------------------
+  // THEORETICAL TIMING (ANALYTICAL, NOT MEASURED)
+  //
+  // For the sequential AES-128 core:
+  //   cycles_per_block = 10
+  //   fclk = chosen core clock (MHz)
+  //
+  // T_block = cycles_per_block / fclk
+  // Roundtrip total ≈ ENC + DEC (2 blocks)
+  // ------------------------------------------------------------------
+  const AES_FCLK_MHZ = 48;          // <<< set to your real FPGA core clock
+  const AES_CYCLES_PER_BLOCK = 10;  // AES-128 sequential rounds
 
-  const AES_FCLK_HZ = AES_FCLK_MHZ * 1e6;
-  const tBlock_s = AES_CYCLES_PER_BLOCK / AES_FCLK_HZ;
+  const fclkHz = AES_FCLK_MHZ * 1e6;
+  const tBlock_s = AES_CYCLES_PER_BLOCK / fclkHz;
+
+  // This roundtrip implementation processes exactly 1 block
+  const blocks = 1;
+
   const encTime_s = blocks * tBlock_s;
   const decTime_s = blocks * tBlock_s;
+  const totalTime_s = encTime_s + decTime_s;
 
   return {
     exists: true,
@@ -119,6 +125,7 @@ export function getRoundtripStatus(groupId) {
     keyHex: currentGroup.keyHex,
     token: currentGroup.token,
     ptHexOriginal: currentGroup.ptHexOriginal,
+
     enc: {
       jobId: currentGroup.encJobId,
       done: currentGroup.encDone,
@@ -126,6 +133,7 @@ export function getRoundtripStatus(groupId) {
       valid: currentGroup.encValid,
       expectedCtHex: currentGroup.encExpectedCtHex,
     },
+
     dec: {
       jobId: currentGroup.decJobId,
       done: currentGroup.decDone,
@@ -133,14 +141,21 @@ export function getRoundtripStatus(groupId) {
       valid: currentGroup.decValid,
       expectedPtHex: currentGroup.decExpectedPtHex,
     },
+
     roundtripOk,
+
+    // Returned so the UI can display it
     timing: {
+      mode: "theoretical",
       fclkMHz: AES_FCLK_MHZ,
       cyclesPerBlock: AES_CYCLES_PER_BLOCK,
       blocks,
       encTime_s,
       decTime_s,
-      totalTime_s: encTime_s + decTime_s,
+      totalTime_s,
+      encTime_ns: encTime_s * 1e9,
+      decTime_ns: decTime_s * 1e9,
+      totalTime_ns: totalTime_s * 1e9,
     },
   };
 }
