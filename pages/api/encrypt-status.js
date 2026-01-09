@@ -1,31 +1,5 @@
 // pages/api/encrypt-status.js
 import { getStatus } from "./_jobs";
-import crypto from "crypto";
-
-// --- Helpers ---
-function normHex(s) {
-  return (s || "").toUpperCase().replace(/[^0-9A-F]/g, "");
-}
-
-// AES-ECB encrypt single 16B block (golden model)
-function aesEcbEncryptHex(keyHex, ptHex) {
-  const key = Buffer.from(normHex(keyHex), "hex");
-  const pt = Buffer.from(normHex(ptHex), "hex");
-
-  const alg =
-    key.length === 16 ? "aes-128-ecb" :
-    key.length === 24 ? "aes-192-ecb" :
-    key.length === 32 ? "aes-256-ecb" :
-    null;
-
-  if (!alg) throw new Error("Invalid key length (must be 16/24/32 bytes)");
-  if (pt.length !== 16) throw new Error("Plaintext must be exactly 16 bytes");
-
-  const cipher = crypto.createCipheriv(alg, key, null);
-  cipher.setAutoPadding(false);
-  const out = Buffer.concat([cipher.update(pt), cipher.final()]);
-  return out.toString("hex").toUpperCase();
-}
 
 // Theoretical timing (analytical, not measured)
 function theoreticalTimingEncrypt({ fclkMHz = 48, cyclesPerBlock = 10, blocks = 1 } = {}) {
@@ -44,67 +18,32 @@ function theoreticalTimingEncrypt({ fclkMHz = 48, cyclesPerBlock = 10, blocks = 
 
 export default function handler(req, res) {
   if (req.method !== "GET") {
-    res.status(405).json({ error: "Use GET" });
-    return;
+    return res.status(405).json({ error: "Use GET" });
   }
 
   const { jobId } = req.query;
   if (!jobId) {
-    res.status(400).json({ error: "jobId is required" });
-    return;
+    return res.status(400).json({ error: "jobId is required" });
   }
 
   const st = getStatus(jobId.toString());
-  if (!st) {
-    res.status(404).json({ error: "Job not found or expired" });
-    return;
+
+  // Your getStatus returns { exists:false } (not null)
+  if (!st || st.exists === false) {
+    return res.status(404).json({ error: "Job not found or expired" });
   }
 
   // IMPORTANT:
-  // Your system keeps the UART JSON field name as "ct" everywhere.
-  // Many setups store the 128-bit input under ctHex even for encryption.
-  // So for encryption, treat "ptHex" as:
-  //   ptHex = st.ptHex if present, else st.ctHex (fallback).
-  const ptHexInput = st.ptHex ?? st.ctHex ?? "";
-
-  // If not done yet, return current status (plus theoretical timing)
-  if (st.status !== "done") {
-    res.status(200).json({
-      jobId: st.id,
-      status: st.status,
-      token: st.token,
-      keyHex: st.keyHex,
-      ptHex: ptHexInput,
-      timing: theoreticalTimingEncrypt({
-        fclkMHz: 48,
-        cyclesPerBlock: 10,
-        blocks: 1,
-      }),
-    });
-    return;
-  }
-
-  // Done: compare FPGA ct to golden model
-  let expectedCtHex = "";
-  let valid = false;
-
-  try {
-    expectedCtHex = aesEcbEncryptHex(st.keyHex, ptHexInput);
-    valid = normHex(st.ctHex) === normHex(expectedCtHex);
-  } catch (e) {
-    expectedCtHex = "";
-    valid = false;
-  }
-
-  res.status(200).json({
-    jobId: st.id,
-    status: "done",
-    token: st.token,
-    keyHex: st.keyHex,
-    ptHex: ptHexInput,
+  // _jobs.js is already the source of truth for:
+  //   - expectedCtHex
+  //   - valid
+  // so we DO NOT recompute AES here.
+  return res.status(200).json({
+    jobId: jobId.toString(),
+    status: st.status,            // "pending" | "assigned" | "done"
     ctHex: st.ctHex || "",
-    expectedCtHex,
-    valid,
+    expectedCtHex: st.expectedCtHex || "",
+    valid: st.valid,
     timing: theoreticalTimingEncrypt({
       fclkMHz: 48,
       cyclesPerBlock: 10,
