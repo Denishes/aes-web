@@ -12,7 +12,6 @@ function aesEcbEncryptHex(keyHex, ptHex) {
   const key = Buffer.from(normHex(keyHex), "hex");
   const pt = Buffer.from(normHex(ptHex), "hex");
 
-  // Select AES variant based on key length
   const alg =
     key.length === 16 ? "aes-128-ecb" :
     key.length === 24 ? "aes-192-ecb" :
@@ -20,9 +19,10 @@ function aesEcbEncryptHex(keyHex, ptHex) {
     null;
 
   if (!alg) throw new Error("Invalid key length (must be 16/24/32 bytes)");
+  if (pt.length !== 16) throw new Error("Plaintext must be exactly 16 bytes");
 
   const cipher = crypto.createCipheriv(alg, key, null);
-  cipher.setAutoPadding(false); // 16-byte block, no padding
+  cipher.setAutoPadding(false);
   const out = Buffer.concat([cipher.update(pt), cipher.final()]);
   return out.toString("hex").toUpperCase();
 }
@@ -60,6 +60,13 @@ export default function handler(req, res) {
     return;
   }
 
+  // IMPORTANT:
+  // Your system keeps the UART JSON field name as "ct" everywhere.
+  // Many setups store the 128-bit input under ctHex even for encryption.
+  // So for encryption, treat "ptHex" as:
+  //   ptHex = st.ptHex if present, else st.ctHex (fallback).
+  const ptHexInput = st.ptHex ?? st.ctHex ?? "";
+
   // If not done yet, return current status (plus theoretical timing)
   if (st.status !== "done") {
     res.status(200).json({
@@ -67,10 +74,10 @@ export default function handler(req, res) {
       status: st.status,
       token: st.token,
       keyHex: st.keyHex,
-      ptHex: st.ptHex,
+      ptHex: ptHexInput,
       timing: theoreticalTimingEncrypt({
-        fclkMHz: 48,        // <<< set to your real FPGA AES clock
-        cyclesPerBlock: 10, // AES-128 sequential (adjust if needed)
+        fclkMHz: 48,
+        cyclesPerBlock: 10,
         blocks: 1,
       }),
     });
@@ -82,7 +89,7 @@ export default function handler(req, res) {
   let valid = false;
 
   try {
-    expectedCtHex = aesEcbEncryptHex(st.keyHex, st.ptHex);
+    expectedCtHex = aesEcbEncryptHex(st.keyHex, ptHexInput);
     valid = normHex(st.ctHex) === normHex(expectedCtHex);
   } catch (e) {
     expectedCtHex = "";
@@ -94,13 +101,13 @@ export default function handler(req, res) {
     status: "done",
     token: st.token,
     keyHex: st.keyHex,
-    ptHex: st.ptHex,
+    ptHex: ptHexInput,
     ctHex: st.ctHex || "",
     expectedCtHex,
     valid,
     timing: theoreticalTimingEncrypt({
-      fclkMHz: 48,        // <<< set to your real FPGA AES clock
-      cyclesPerBlock: 10, // AES-128 sequential (adjust if needed)
+      fclkMHz: 48,
+      cyclesPerBlock: 10,
       blocks: 1,
     }),
   });
