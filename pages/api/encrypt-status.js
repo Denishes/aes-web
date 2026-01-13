@@ -2,7 +2,7 @@
 import { getStatus } from "./_jobs";
 
 // Theoretical timing (analytical, not measured)
-function theoreticalTimingEncrypt({ fclkMHz = 48, cyclesPerBlock = 10, blocks = 1 } = {}) {
+function theoreticalTimingEncrypt({ fclkMHz = 48, cyclesPerBlock = 5, blocks = 1 } = {}) {
   const fclkHz = fclkMHz * 1e6;
   const tBlock_s = cyclesPerBlock / fclkHz;
   const encTime_s = blocks * tBlock_s;
