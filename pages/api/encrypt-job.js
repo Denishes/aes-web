@@ -2,6 +2,7 @@
 import { getJobForEsp } from "./_jobs";
 
 export default function handler(req, res) {
+    res.setHeader("Cache-Control", "no-store");
   if (req.method !== "GET") {
     res.status(405).json({ error: "Use GET" });
     return;
