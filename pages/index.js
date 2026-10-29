@@ -252,7 +252,7 @@ export default function Home() {
   }
 
   function startEncPolling(id) {
-    setEncStatus("Waiting for ENC worker. Initial pickup may take up to 60 seconds per worker...");
+    setEncStatus("Waiting for ENC worker. Initial pickup may take up to 30 seconds per worker...");
     startStatusPolling(encPollTimer, "/api/encrypt-status?jobId=" + encodeURIComponent(id), (data) => {
       // Timing is returned even before done
       if (data.timing) setEncTiming(data.timing);
@@ -264,7 +264,7 @@ export default function Home() {
         setEncValid(data.valid);
         return true;
       } else {
-        setEncStatus(`Status: ${data.status} (waiting for ENC worker; initial pickup may take up to 60 seconds...)`);
+        setEncStatus(`Status: ${data.status} (waiting for ENC worker; initial pickup may take up to 30 seconds...)`);
       }
 
       return false;
@@ -305,7 +305,7 @@ export default function Home() {
   }
 
   function startDecPolling(id) {
-    setDecStatus("Waiting for DEC worker. Initial pickup may take up to 60 seconds per worker...");
+    setDecStatus("Waiting for DEC worker. Initial pickup may take up to 30 seconds per worker...");
     startStatusPolling(decPollTimer, "/api/decrypt-status?jobId=" + encodeURIComponent(id), (data) => {
       // Timing is returned even before done
       if (data.timing) setDecTiming(data.timing);
@@ -326,7 +326,7 @@ export default function Home() {
 
         return true;
       } else {
-        setDecStatus(`Status: ${data.status} (waiting for DEC worker; initial pickup may take up to 60 seconds...)`);
+        setDecStatus(`Status: ${data.status} (waiting for DEC worker; initial pickup may take up to 30 seconds...)`);
       }
 
       return false;
@@ -374,7 +374,7 @@ export default function Home() {
   }
 
   function startRtPolling(id) {
-    setRtStatus("Waiting for ENC then DEC workers. Initial pickup may take up to 60 seconds per worker...");
+    setRtStatus("Waiting for ENC then DEC workers. Initial pickup may take up to 30 seconds per worker...");
     startStatusPolling(rtPollTimer, "/api/roundtrip-status?groupId=" + encodeURIComponent(id), (data) => {
       if (data.status === "waiting-enc") setRtStatus("Waiting for ENC FPGA...");
       else if (data.status === "waiting-dec") setRtStatus("ENC done, waiting for DEC FPGA...");
