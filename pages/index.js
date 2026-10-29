@@ -67,7 +67,7 @@ function stopStatusPolling(ref) {
   ref.current = null;
 }
 
-function startStatusPolling(ref, url, onData, setStatus, onFinish, timeoutMs = 180000) {
+function startStatusPolling(ref, url, onData, setStatus, onFinish, timeoutMs = 300000) {
   stopStatusPolling(ref);
   const session = { cancelled: false, nextTimer: null, deadlineTimer: null, controller: null };
   ref.current = session;
@@ -76,7 +76,7 @@ function startStatusPolling(ref, url, onData, setStatus, onFinish, timeoutMs = 1
   session.deadlineTimer = setTimeout(() => {
     if (!isCurrent()) return;
     finish();
-    setStatus("Timed out waiting for the result. Check the Banana worker; the server may have lost the job. No job was automatically resubmitted.");
+    setStatus("Stopped checking after 5 minutes without a result. The worker may still finish this job. Check its output before submitting another job; nothing was automatically resubmitted.");
   }, timeoutMs);
 
   async function poll() {
@@ -113,19 +113,30 @@ function startStatusPolling(ref, url, onData, setStatus, onFinish, timeoutMs = 1
 }
 
 export default function Home() {
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
+  const [busy, setBusy] = useState({ enc: false, dec: false, rt: false });
+  const busyRef = useRef({ enc: false, dec: false, rt: false });
   const mountedRef = useRef(true);
-  const submissionController = useRef(null);
+  const submissionControllers = useRef({});
 
-  function finishJob() {
-    busyRef.current = false;
-    if (mountedRef.current) setBusy(false);
+  function beginJob(kind) {
+    const current = busyRef.current;
+    const blocked = kind === "rt"
+      ? current.enc || current.dec || current.rt
+      : current[kind] || current.rt;
+    if (blocked) return false;
+    busyRef.current = { ...current, [kind]: true };
+    setBusy(busyRef.current);
+    return true;
   }
 
-  async function postJob(url, payload) {
+  function finishJob(kind) {
+    busyRef.current = { ...busyRef.current, [kind]: false };
+    if (mountedRef.current) setBusy(busyRef.current);
+  }
+
+  async function postJob(url, payload, kind) {
     const controller = new AbortController();
-    submissionController.current = controller;
+    submissionControllers.current[kind] = controller;
     const timer = setTimeout(() => controller.abort(), 20000);
     try {
       const res = await fetch(url, {
@@ -139,7 +150,7 @@ export default function Home() {
       return data;
     } finally {
       clearTimeout(timer);
-      if (submissionController.current === controller) submissionController.current = null;
+      if (submissionControllers.current[kind] === controller) delete submissionControllers.current[kind];
     }
   }
 
@@ -191,7 +202,7 @@ export default function Home() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      submissionController.current?.abort();
+      Object.values(submissionControllers.current).forEach((controller) => controller.abort());
       stopStatusPolling(encPollTimer);
       stopStatusPolling(decPollTimer);
       stopStatusPolling(rtPollTimer);
@@ -216,9 +227,7 @@ export default function Home() {
   // ========== ENC-only API logic ==========
   async function submitEncrypt(e) {
     e.preventDefault();
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
+    if (!beginJob("enc")) return;
     setEncCtHex("");
     setEncExpectedHex("");
     setEncValid(null);
@@ -229,7 +238,7 @@ export default function Home() {
     const ptHexToSend = asciiMode ? asciiToHexPadded16(ptAscii) : ptHex.trim();
 
     try {
-      const data = await postJob("/api/encrypt-request", { token, keyHex: trimmedKey, ptHex: ptHexToSend });
+      const data = await postJob("/api/encrypt-request", { token, keyHex: trimmedKey, ptHex: ptHexToSend }, "enc");
       if (!mountedRef.current) return;
       if (!data.jobId) throw new Error("Server returned no jobId");
       setEncJobId(data.jobId);
@@ -237,7 +246,7 @@ export default function Home() {
       startEncPolling(data.jobId);
     } catch (err) {
       if (!mountedRef.current) return;
-      finishJob();
+      finishJob("enc");
       setEncStatus("Request error: " + (err.name === "AbortError" ? "Submission timed out; it may still have reached the server. Check the worker before retrying." : err.message));
     }
   }
@@ -259,7 +268,7 @@ export default function Home() {
       }
 
       return false;
-    }, setEncStatus, finishJob, 180000);
+    }, setEncStatus, () => finishJob("enc"), 300000);
   }
 
   function stopEncPolling() {
@@ -269,9 +278,7 @@ export default function Home() {
   // ========== Decrypt API logic ==========
   async function submitDecrypt(e) {
     e.preventDefault();
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
+    if (!beginJob("dec")) return;
     setDecPtHex("");
     setDecExpectedHex("");
     setDecValid(null);
@@ -284,7 +291,7 @@ export default function Home() {
     const trimmedCt = decCtHex.trim();
 
     try {
-      const data = await postJob("/api/decrypt-request", { token, keyHex: trimmedKey, ctHex: trimmedCt });
+      const data = await postJob("/api/decrypt-request", { token, keyHex: trimmedKey, ctHex: trimmedCt }, "dec");
       if (!mountedRef.current) return;
       if (!data.jobId) throw new Error("Server returned no jobId");
       setDecJobId(data.jobId);
@@ -292,7 +299,7 @@ export default function Home() {
       startDecPolling(data.jobId);
     } catch (err) {
       if (!mountedRef.current) return;
-      finishJob();
+      finishJob("dec");
       setDecStatus("Request error: " + (err.name === "AbortError" ? "Submission timed out; it may still have reached the server. Check the worker before retrying." : err.message));
     }
   }
@@ -323,7 +330,7 @@ export default function Home() {
       }
 
       return false;
-    }, setDecStatus, finishJob, 180000);
+    }, setDecStatus, () => finishJob("dec"), 300000);
   }
 
   function stopDecPolling() {
@@ -333,9 +340,7 @@ export default function Home() {
   // ========== Roundtrip API logic (ENC → DEC) ==========
   async function submitRoundtrip(e) {
     e.preventDefault();
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
+    if (!beginJob("rt")) return;
 
     setRtEncCtHex("");
     setRtEncValid(null);
@@ -355,7 +360,7 @@ export default function Home() {
       : { token, keyHex: trimmedKey, ptHex: trimmedPtHex };
 
     try {
-      const data = await postJob("/api/roundtrip-request", body);
+      const data = await postJob("/api/roundtrip-request", body, "rt");
       if (!mountedRef.current) return;
       if (!data.groupId) throw new Error("Server returned no groupId");
       setRtGroupId(data.groupId);
@@ -363,7 +368,7 @@ export default function Home() {
       startRtPolling(data.groupId);
     } catch (err) {
       if (!mountedRef.current) return;
-      finishJob();
+      finishJob("rt");
       setRtStatus("Request error: " + (err.name === "AbortError" ? "Submission timed out; it may still have reached the server. Check the worker before retrying." : err.message));
     }
   }
@@ -403,7 +408,7 @@ export default function Home() {
       if (data.status === "done") return true;
 
       return false;
-    }, setRtStatus, finishJob, 300000);
+    }, setRtStatus, () => finishJob("rt"), 300000);
   }
 
   function stopRtPolling() {
@@ -411,7 +416,7 @@ export default function Home() {
   }
 
   function toggleRoundtrip() {
-    if (busyRef.current) return;
+    if (busyRef.current.enc || busyRef.current.rt) return;
     const next = !roundtripMode;
     setRoundtripMode(next);
     if (next) {
@@ -584,7 +589,7 @@ export default function Home() {
 
               <div style={{ gridColumn: "1 / 3", display: "flex", alignItems: "center", gap: "0.55rem", marginTop: "0.4rem" }}>
                 <label style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", cursor: "pointer", fontSize: "0.87rem", color: "#e5e7eb" }}>
-                  <input type="checkbox" disabled={busy} checked={roundtripMode} onChange={toggleRoundtrip} style={{ cursor: "pointer" }} />
+                  <input type="checkbox" disabled={busy.enc || busy.rt} checked={roundtripMode} onChange={toggleRoundtrip} style={{ cursor: "pointer" }} />
                   <span>Roundtrip via both FPGAs (auto ENC → DEC)</span>
                 </label>
                 <span style={{ fontSize: "0.78rem", color: "#9ca3af" }}>
@@ -661,7 +666,7 @@ export default function Home() {
               <div style={{ textAlign: "right" }}>
                 <button
                   type="submit"
-                  disabled={busy}
+                  disabled={busy.enc || busy.rt || (roundtripMode && busy.dec)}
                   style={{
                     padding: "0.5rem 1.4rem",
                     borderRadius: "999px",
@@ -677,7 +682,7 @@ export default function Home() {
                     transition: "transform 0.08s ease, box-shadow 0.08s ease",
                   }}
                 >
-                  {busy ? "Waiting for current job..." : roundtripMode ? "Run roundtrip ENC → DEC" : "Send to ENC FPGA"}
+                  {busy.rt ? "Waiting for roundtrip..." : busy.enc ? "Waiting for encryption..." : roundtripMode ? (busy.dec ? "Waiting for decryption to finish..." : "Run roundtrip ENC → DEC") : "Send to ENC FPGA"}
                 </button>
               </div>
             </form>
@@ -794,7 +799,7 @@ export default function Home() {
               <div style={{ textAlign: "right" }}>
                 <button
                   type="submit"
-                  disabled={busy}
+                  disabled={busy.dec || busy.rt}
                   style={{
                     padding: "0.5rem 1.4rem",
                     borderRadius: "999px",
@@ -807,7 +812,7 @@ export default function Home() {
                     boxShadow: "0 8px 20px rgba(248, 181, 0, 0.45)",
                   }}
                 >
-                  {busy ? "Waiting for current job..." : "Send to DEC FPGA"}
+                  {busy.rt ? "Roundtrip is using DEC..." : busy.dec ? "Waiting for decryption..." : "Send to DEC FPGA"}
                 </button>
               </div>
             </form>
