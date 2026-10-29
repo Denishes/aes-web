@@ -17,6 +17,7 @@ function theoreticalTimingEncrypt({ fclkMHz = 48, cyclesPerBlock = 10, blocks = 
 }
 
 export default function handler(req, res) {
+    res.setHeader("Cache-Control", "no-store");
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Use GET" });
   }
