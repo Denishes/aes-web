@@ -1,5 +1,5 @@
 // pages/index.js
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 // EXACT match to your FPGA key_lookup in top.v
 const TOKEN_KEYS = {
@@ -55,7 +55,94 @@ function formatTimeFromSeconds(sec) {
   return `${ms.toFixed(3)} ms`;
 }
 
+const STATUS_INTERVAL_MS = 5000;
+
+function stopStatusPolling(ref) {
+  const session = ref.current;
+  if (!session) return;
+  session.cancelled = true;
+  clearTimeout(session.nextTimer);
+  clearTimeout(session.deadlineTimer);
+  session.controller?.abort();
+  ref.current = null;
+}
+
+function startStatusPolling(ref, url, onData, setStatus, onFinish, timeoutMs = 180000) {
+  stopStatusPolling(ref);
+  const session = { cancelled: false, nextTimer: null, deadlineTimer: null, controller: null };
+  ref.current = session;
+  const isCurrent = () => !session.cancelled && ref.current === session;
+  const finish = () => { stopStatusPolling(ref); onFinish(); };
+  session.deadlineTimer = setTimeout(() => {
+    if (!isCurrent()) return;
+    finish();
+    setStatus("Timed out waiting for the result. Check the Banana worker; the server may have lost the job. No job was automatically resubmitted.");
+  }, timeoutMs);
+
+  async function poll() {
+    if (!isCurrent()) return;
+    const controller = new AbortController();
+    session.controller = controller;
+    const requestTimer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+      if (!isCurrent()) return;
+      if (res.status === 404) {
+        setStatus("Job not visible on this server response. Retrying; it may have been lost from server memory...");
+      } else if (res.status === 429 || res.status >= 500) {
+        setStatus("Server temporarily unavailable. Retrying...");
+      } else if (!res.ok) {
+        setStatus("Status request failed: HTTP " + res.status);
+        finish();
+        return;
+      } else {
+        const data = await res.json();
+        if (!isCurrent()) return;
+        if (onData(data)) { finish(); return; }
+      }
+    } catch (err) {
+      if (!isCurrent()) return;
+      setStatus("Status connection interrupted. Retrying...");
+    } finally {
+      clearTimeout(requestTimer);
+      if (session.controller === controller) session.controller = null;
+    }
+    if (isCurrent()) session.nextTimer = setTimeout(poll, STATUS_INTERVAL_MS);
+  }
+  session.nextTimer = setTimeout(poll, STATUS_INTERVAL_MS);
+}
+
 export default function Home() {
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const mountedRef = useRef(true);
+  const submissionController = useRef(null);
+
+  function finishJob() {
+    busyRef.current = false;
+    if (mountedRef.current) setBusy(false);
+  }
+
+  async function postJob(url, payload) {
+    const controller = new AbortController();
+    submissionController.current = controller;
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    } finally {
+      clearTimeout(timer);
+      if (submissionController.current === controller) submissionController.current = null;
+    }
+  }
+
   // Shared: token + key
   const [token, setToken] = useState("0");
   const [keyHex, setKeyHex] = useState(TOKEN_KEYS["0"].keyHex);
@@ -100,6 +187,17 @@ export default function Home() {
   const [rtTiming, setRtTiming] = useState(null);
   const rtPollTimer = useRef(null);
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      submissionController.current?.abort();
+      stopStatusPolling(encPollTimer);
+      stopStatusPolling(decPollTimer);
+      stopStatusPolling(rtPollTimer);
+    };
+  }, []);
+
   // Effective plaintext hex that actually goes into the ENC FPGA
   const effectivePtHex = asciiMode ? asciiToHexPadded16(ptAscii) : ptHex.trim();
 
@@ -118,6 +216,9 @@ export default function Home() {
   // ========== ENC-only API logic ==========
   async function submitEncrypt(e) {
     e.preventDefault();
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
     setEncCtHex("");
     setEncExpectedHex("");
     setEncValid(null);
@@ -128,34 +229,22 @@ export default function Home() {
     const ptHexToSend = asciiMode ? asciiToHexPadded16(ptAscii) : ptHex.trim();
 
     try {
-      const res = await fetch("/api/encrypt-request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, keyHex: trimmedKey, ptHex: ptHexToSend }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setEncStatus("Error: " + (data.error || res.statusText));
-        return;
-      }
+      const data = await postJob("/api/encrypt-request", { token, keyHex: trimmedKey, ptHex: ptHexToSend });
+      if (!mountedRef.current) return;
+      if (!data.jobId) throw new Error("Server returned no jobId");
       setEncJobId(data.jobId);
       setEncStatus("Encrypt job created, waiting for ENC FPGA...");
       startEncPolling(data.jobId);
     } catch (err) {
-      setEncStatus("Request error: " + err.message);
+      if (!mountedRef.current) return;
+      finishJob();
+      setEncStatus("Request error: " + (err.name === "AbortError" ? "Submission timed out; it may still have reached the server. Check the worker before retrying." : err.message));
     }
   }
 
-  async function pollEncryptOnce(id) {
-    try {
-      const res = await fetch(`/api/encrypt-status?jobId=${encodeURIComponent(id)}`);
-      const data = await res.json();
-      if (!res.ok) {
-        setEncStatus("Status error: " + (data.error || res.statusText));
-        stopEncPolling();
-        return;
-      }
-
+  function startEncPolling(id) {
+    setEncStatus("Waiting for ENC worker. Initial pickup may take up to 60 seconds per worker...");
+    startStatusPolling(encPollTimer, "/api/encrypt-status?jobId=" + encodeURIComponent(id), (data) => {
       // Timing is returned even before done
       if (data.timing) setEncTiming(data.timing);
 
@@ -164,31 +253,25 @@ export default function Home() {
         setEncCtHex(data.ctHex || "");
         setEncExpectedHex(data.expectedCtHex || "");
         setEncValid(data.valid);
-        stopEncPolling();
+        return true;
       } else {
-        setEncStatus(`Status: ${data.status} (waiting for ENC FPGA...)`);
+        setEncStatus(`Status: ${data.status} (waiting for ENC worker; initial pickup may take up to 60 seconds...)`);
       }
-    } catch (err) {
-      setEncStatus("Poll error: " + err.message);
-      stopEncPolling();
-    }
-  }
 
-  function startEncPolling(id) {
-    stopEncPolling();
-    encPollTimer.current = setInterval(() => pollEncryptOnce(id), 1000);
+      return false;
+    }, setEncStatus, finishJob, 180000);
   }
 
   function stopEncPolling() {
-    if (encPollTimer.current) {
-      clearInterval(encPollTimer.current);
-      encPollTimer.current = null;
-    }
+    stopStatusPolling(encPollTimer);
   }
 
   // ========== Decrypt API logic ==========
   async function submitDecrypt(e) {
     e.preventDefault();
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
     setDecPtHex("");
     setDecExpectedHex("");
     setDecValid(null);
@@ -201,34 +284,22 @@ export default function Home() {
     const trimmedCt = decCtHex.trim();
 
     try {
-      const res = await fetch("/api/decrypt-request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, keyHex: trimmedKey, ctHex: trimmedCt }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setDecStatus("Error: " + (data.error || res.statusText));
-        return;
-      }
+      const data = await postJob("/api/decrypt-request", { token, keyHex: trimmedKey, ctHex: trimmedCt });
+      if (!mountedRef.current) return;
+      if (!data.jobId) throw new Error("Server returned no jobId");
       setDecJobId(data.jobId);
       setDecStatus("Decrypt job created, waiting for DEC FPGA...");
       startDecPolling(data.jobId);
     } catch (err) {
-      setDecStatus("Request error: " + err.message);
+      if (!mountedRef.current) return;
+      finishJob();
+      setDecStatus("Request error: " + (err.name === "AbortError" ? "Submission timed out; it may still have reached the server. Check the worker before retrying." : err.message));
     }
   }
 
-  async function pollDecryptOnce(id) {
-    try {
-      const res = await fetch(`/api/decrypt-status?jobId=${encodeURIComponent(id)}`);
-      const data = await res.json();
-      if (!res.ok) {
-        setDecStatus("Status error: " + (data.error || res.statusText));
-        stopDecPolling();
-        return;
-      }
-
+  function startDecPolling(id) {
+    setDecStatus("Waiting for DEC worker. Initial pickup may take up to 60 seconds per worker...");
+    startStatusPolling(decPollTimer, "/api/decrypt-status?jobId=" + encodeURIComponent(id), (data) => {
       // Timing is returned even before done
       if (data.timing) setDecTiming(data.timing);
 
@@ -246,31 +317,25 @@ export default function Home() {
         setDecPtAscii(hexToAsciiFromHex(actualPt));
         setDecExpectedAscii(hexToAsciiFromHex(expectedPt));
 
-        stopDecPolling();
+        return true;
       } else {
-        setDecStatus(`Status: ${data.status} (waiting for DEC FPGA...)`);
+        setDecStatus(`Status: ${data.status} (waiting for DEC worker; initial pickup may take up to 60 seconds...)`);
       }
-    } catch (err) {
-      setDecStatus("Poll error: " + err.message);
-      stopDecPolling();
-    }
-  }
 
-  function startDecPolling(id) {
-    stopDecPolling();
-    decPollTimer.current = setInterval(() => pollDecryptOnce(id), 1000);
+      return false;
+    }, setDecStatus, finishJob, 180000);
   }
 
   function stopDecPolling() {
-    if (decPollTimer.current) {
-      clearInterval(decPollTimer.current);
-      decPollTimer.current = null;
-    }
+    stopStatusPolling(decPollTimer);
   }
 
   // ========== Roundtrip API logic (ENC → DEC) ==========
   async function submitRoundtrip(e) {
     e.preventDefault();
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
 
     setRtEncCtHex("");
     setRtEncValid(null);
@@ -290,34 +355,22 @@ export default function Home() {
       : { token, keyHex: trimmedKey, ptHex: trimmedPtHex };
 
     try {
-      const res = await fetch("/api/roundtrip-request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setRtStatus("Error: " + (data.error || res.statusText));
-        return;
-      }
+      const data = await postJob("/api/roundtrip-request", body);
+      if (!mountedRef.current) return;
+      if (!data.groupId) throw new Error("Server returned no groupId");
       setRtGroupId(data.groupId);
       setRtStatus("Roundtrip started: waiting for ENC FPGA...");
       startRtPolling(data.groupId);
     } catch (err) {
-      setRtStatus("Request error: " + err.message);
+      if (!mountedRef.current) return;
+      finishJob();
+      setRtStatus("Request error: " + (err.name === "AbortError" ? "Submission timed out; it may still have reached the server. Check the worker before retrying." : err.message));
     }
   }
 
-  async function pollRoundtripOnce(groupId) {
-    try {
-      const res = await fetch(`/api/roundtrip-status?groupId=${encodeURIComponent(groupId)}`);
-      const data = await res.json();
-      if (!res.ok) {
-        setRtStatus("Status error: " + (data.error || res.statusText));
-        stopRtPolling();
-        return;
-      }
-
+  function startRtPolling(id) {
+    setRtStatus("Waiting for ENC then DEC workers. Initial pickup may take up to 60 seconds per worker...");
+    startStatusPolling(rtPollTimer, "/api/roundtrip-status?groupId=" + encodeURIComponent(id), (data) => {
       if (data.status === "waiting-enc") setRtStatus("Waiting for ENC FPGA...");
       else if (data.status === "waiting-dec") setRtStatus("ENC done, waiting for DEC FPGA...");
       else if (data.status === "done") setRtStatus("Roundtrip done");
@@ -347,26 +400,18 @@ export default function Home() {
       if (data.timing) setRtTiming(data.timing);
       else setRtTiming(null);
 
-      if (data.status === "done") stopRtPolling();
-    } catch (err) {
-      setRtStatus("Poll error: " + err.message);
-      stopRtPolling();
-    }
-  }
+      if (data.status === "done") return true;
 
-  function startRtPolling(groupId) {
-    stopRtPolling();
-    rtPollTimer.current = setInterval(() => pollRoundtripOnce(groupId), 1000);
+      return false;
+    }, setRtStatus, finishJob, 300000);
   }
 
   function stopRtPolling() {
-    if (rtPollTimer.current) {
-      clearInterval(rtPollTimer.current);
-      rtPollTimer.current = null;
-    }
+    stopStatusPolling(rtPollTimer);
   }
 
   function toggleRoundtrip() {
+    if (busyRef.current) return;
     const next = !roundtripMode;
     setRoundtripMode(next);
     if (next) {
@@ -485,7 +530,7 @@ export default function Home() {
             <h1 style={{ fontSize: "1.6rem", fontWeight: 600, margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
               AES FPGA Control Panel
               <span style={{ fontSize: "0.8rem", padding: "0.1rem 0.6rem", borderRadius: "999px", border: "1px solid rgba(56, 189, 248, 0.6)", color: "#e0f2fe", background: "rgba(8, 47, 73, 0.6)" }}>
-                ENC + DEC via ESP32 + Vercel
+                ENC + DEC via Banana Pi + Vercel
               </span>
             </h1>
             <p style={{ margin: "0.4rem 0 0", fontSize: "0.9rem", color: "#cbd5f5" }}>
@@ -539,7 +584,7 @@ export default function Home() {
 
               <div style={{ gridColumn: "1 / 3", display: "flex", alignItems: "center", gap: "0.55rem", marginTop: "0.4rem" }}>
                 <label style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", cursor: "pointer", fontSize: "0.87rem", color: "#e5e7eb" }}>
-                  <input type="checkbox" checked={roundtripMode} onChange={toggleRoundtrip} style={{ cursor: "pointer" }} />
+                  <input type="checkbox" disabled={busy} checked={roundtripMode} onChange={toggleRoundtrip} style={{ cursor: "pointer" }} />
                   <span>Roundtrip via both FPGAs (auto ENC → DEC)</span>
                 </label>
                 <span style={{ fontSize: "0.78rem", color: "#9ca3af" }}>
@@ -616,6 +661,7 @@ export default function Home() {
               <div style={{ textAlign: "right" }}>
                 <button
                   type="submit"
+                  disabled={busy}
                   style={{
                     padding: "0.5rem 1.4rem",
                     borderRadius: "999px",
@@ -631,7 +677,7 @@ export default function Home() {
                     transition: "transform 0.08s ease, box-shadow 0.08s ease",
                   }}
                 >
-                  {roundtripMode ? "Run roundtrip ENC → DEC" : "Send to ENC FPGA"}
+                  {busy ? "Waiting for current job..." : roundtripMode ? "Run roundtrip ENC → DEC" : "Send to ENC FPGA"}
                 </button>
               </div>
             </form>
@@ -748,6 +794,7 @@ export default function Home() {
               <div style={{ textAlign: "right" }}>
                 <button
                   type="submit"
+                  disabled={busy}
                   style={{
                     padding: "0.5rem 1.4rem",
                     borderRadius: "999px",
@@ -760,7 +807,7 @@ export default function Home() {
                     boxShadow: "0 8px 20px rgba(248, 181, 0, 0.45)",
                   }}
                 >
-                  Send to DEC FPGA
+                  {busy ? "Waiting for current job..." : "Send to DEC FPGA"}
                 </button>
               </div>
             </form>
@@ -808,6 +855,7 @@ export default function Home() {
       </main>
 
       <style jsx global>{`
+        button:disabled { opacity: 0.55; cursor: wait !important; }
         html,
         body,
         #__next {
